@@ -15,6 +15,7 @@ synthetic file for a real capture is a file drop plus (for the real
 | `shortcuts_synthetic.vdf` | Steam's binary shortcut store, 3 entries (spec 2.1) | `shortcuts_real.vdf` -- a sanitised `userdata/<steamid3>/config/shortcuts.vdf` from a device |
 | `build_synthetic_shortcuts.py` | the raw-bytes generator for the above | nothing; it stays, and `test_vdf.py` asserts the committed fixture still matches its output |
 | `loginusers_synthetic.vdf` | Steam's text-KeyValues `config/loginusers.vdf` (spec 3.4) | a sanitised real `loginusers.vdf` |
+| `moonlight_list_sample.csv` | `moonlight list --csv` output (spec 2.1/2.3) | real `moonlight list <host> --csv` output, host UUID scrubbed |
 
 ## TODO: `shortcuts_real.vdf`
 
@@ -43,8 +44,29 @@ consistent with the `userdata/` directory names) and replacing
 `AccountName`/`PersonaName`. Drop it in as `loginusers_real.vdf`; the
 tokenizer test picks it up automatically.
 
+## `moonlight_list_sample.csv`
+
+**SYNTHETIC -- TODO: replace with real data.** Hand-built from the header and
+row shape documented in spec section 2.1/2.3 (moonlight-qt's
+`app/cli/listapps.cpp`): `Name, ID, HDR Support, App Collection Game, Hidden,
+Direct Launch, Boxart URL`, one `file://` boxart path and one
+`qrc:/res/no_app_image.png` (not cached) row, one `Hidden=True` row and one
+`App Collection Game=True` row to exercise the filtering in
+`moonlight.list_apps()`.
+
+The exact boolean spelling (`True`/`False` vs `true`/`1`) that moonlight-qt's
+`--csv` flag actually emits is unverified -- `moonlight.py`'s `_parse_bool`
+accepts several common spellings defensively, but this has never been
+checked against a real binary.
+
+TODO: replace this file with real `moonlight list --host <host> --csv`
+output captured from each of the user's Moonlight hosts (once available),
+with the host UUID in the `Boxart URL` column's cache path scrubbed to
+something like `<host-uuid>`. Capturing it is a one-line run: `moonlight
+list <host> --csv > moonlight_list_<host>.csv`, then hand-edit out any
+real host name, UUID, or absolute home directory before committing.
+
 ## Fixtures owned by other PRs
 
-`moonlight list --csv` output (PR-3) and the SteamGridDB / Steam-store JSON
-bodies (PR-4) land alongside these with the same rules. They are listed in
-`AGENTS.md` rather than here until they exist.
+The SteamGridDB / Steam-store JSON bodies (PR-4) land alongside these with the
+same rules. They are listed in `AGENTS.md` rather than here until they exist.

@@ -1,21 +1,21 @@
 """argparse entry point: subcommands, exit codes, logging, SIGINT handling.
 
-Only ``doctor`` does real work in this PR (spec's PR-1 scope); every other
-subcommand parses its flags and then exits 1 with "not implemented", so the
-CLI surface (spec 3.3) is fixed before the modules behind it exist.
+``doctor`` (PR-1) and ``launch`` (PR-3, backed by :mod:`moonlight_steam_sync.moonlight`)
+do real work; every other subcommand parses its flags and then exits 1 with
+"not implemented", so the CLI surface (spec 3.3) is fixed before the modules
+behind it exist.
 """
 
 from __future__ import annotations
 
 import argparse
 import platform
-import shutil
 import signal
 import subprocess
 import sys
 from pathlib import Path
 
-from moonlight_steam_sync import __version__, steam
+from moonlight_steam_sync import __version__, moonlight, steam
 from moonlight_steam_sync.config import DEFAULT_KEY_FILE, load_config
 
 NOT_IMPLEMENTED = "not implemented"
@@ -86,27 +86,6 @@ def _print_not_implemented(command: str) -> int:
     return EXIT_USAGE_OR_CONFIG
 
 
-def _find_moonlight() -> str | None:
-    native = shutil.which("moonlight")
-    if native:
-        return native
-    flatpak = shutil.which("flatpak")
-    if flatpak:
-        try:
-            result = subprocess.run(
-                [flatpak, "list", "--app", "--columns=application"],
-                capture_output=True,
-                text=True,
-                timeout=5,
-                check=False,
-            )
-        except OSError:
-            return None
-        if "com.moonlight_stream.Moonlight" in result.stdout:
-            return "flatpak run com.moonlight_stream.Moonlight"
-    return None
-
-
 def _steam_running() -> bool:
     return steam.is_running()
 
@@ -150,8 +129,8 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     lines.append(_steam_user_line(steam_root))
     lines.append(f"steam running: {'yes' if _steam_running() else 'no'}")
 
-    moonlight_path = _find_moonlight()
-    lines.append(f"moonlight:     {moonlight_path if moonlight_path else 'not found'}")
+    moonlight_bin = moonlight.find_binary()
+    lines.append(f"moonlight:     {' '.join(moonlight_bin) if moonlight_bin else 'not found'}")
 
     key_present = bool(cfg.sgdb_api_key)
     lines.append(f"sgdb api key:  {'present' if key_present else 'not set'}")
@@ -162,6 +141,33 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 
     print("\n".join(lines))
     return EXIT_OK
+
+
+def cmd_launch(args: argparse.Namespace) -> int:
+    """`exec` into `moonlight stream <host> "<name>"` (spec 3.3).
+
+    Never returns on success: :func:`moonlight.stream` replaces this
+    process via ``os.execvp``.
+    """
+    cfg = load_config(args)
+    if not cfg.host:
+        print(
+            "launch: no host configured; set `host` in ~/.config/moonlight-steam-sync/config.toml",
+            file=sys.stderr,
+        )
+        return EXIT_USAGE_OR_CONFIG
+
+    try:
+        moonlight.stream(cfg.host, args.name, args.extra)
+    except moonlight.MoonlightNotFoundError as exc:
+        print(f"launch: {exc}", file=sys.stderr)
+        return EXIT_MOONLIGHT_UNREACHABLE
+    except OSError as exc:
+        # os.execvp failed to replace the process (e.g. the resolved binary
+        # vanished between find_binary() and exec).
+        print(f"launch: failed to run moonlight: {exc}", file=sys.stderr)
+        return EXIT_MOONLIGHT_UNREACHABLE
+    return EXIT_OK  # pragma: no cover -- unreachable when execvp succeeds
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -176,6 +182,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "doctor":
         return cmd_doctor(args)
+    if args.command == "launch":
+        return cmd_launch(args)
 
     return _print_not_implemented(args.command)
 

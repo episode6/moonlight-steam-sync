@@ -1,12 +1,13 @@
 """Tests for the argparse skeleton in __main__.py.
 
-Every subcommand from spec 3.3 must parse and, except for `doctor`, exit 1
-with a "not implemented" message -- this PR only wires the CLI surface and
-config.py, everything else is stubbed for later PRs.
+Every subcommand from spec 3.3 must parse and, except for `doctor` (PR-1) and
+`launch` (PR-3), exit 1 with a "not implemented" message -- the rest of the
+CLI surface is wired but the modules behind it land in later PRs.
 """
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 
@@ -14,14 +15,14 @@ import pytest
 
 from moonlight_steam_sync import __main__ as main_module
 from moonlight_steam_sync import config as config_module
+from moonlight_steam_sync import moonlight
 from moonlight_steam_sync.__main__ import build_parser, main
 
-NOT_YET_IMPLEMENTED = ["sync", "art", "list", "status", "launch", "ignore", "remove"]
+NOT_YET_IMPLEMENTED = ["sync", "art", "list", "status", "ignore", "remove"]
 
 # `ignore` and `remove` require their mutually-exclusive `--all | names` group
 # to be satisfied to even parse; every other stub takes no required args.
 _ARGV_FOR_COMMAND = {
-    "launch": ["launch", "X"],
     "ignore": ["ignore", "--all"],
     "remove": ["remove", "--all"],
 }
@@ -74,6 +75,58 @@ def test_doctor_runs_and_exits_0(capsys, tmp_path, monkeypatch):
     assert "sgdb api key:" in out
     assert "steam running:" in out
     assert "sgdb api key:  not set" in out
+
+
+def test_launch_execs_moonlight_stream_with_configured_host(
+    tmp_path, monkeypatch, capsys
+):
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('host = "MY-GAMING-PC"\n')
+    monkeypatch.setattr(config_module, "DEFAULT_CONFIG_PATH", config_path)
+    monkeypatch.setattr(config_module, "DEFAULT_KEY_FILE", tmp_path / "sgdb-api-key")
+
+    captured = {}
+    monkeypatch.setattr(moonlight, "find_binary", lambda: ["/usr/bin/moonlight"])
+    monkeypatch.setattr(
+        os, "execvp", lambda file, args: captured.update(file=file, args=args)
+    )
+
+    exit_code = main(["launch", "Elden Ring", "--", "--fps", "60"])
+
+    assert exit_code == main_module.EXIT_OK
+    assert captured["args"] == [
+        "/usr/bin/moonlight",
+        "stream",
+        "MY-GAMING-PC",
+        "Elden Ring",
+        "--fps",
+        "60",
+    ]
+
+
+def test_launch_without_a_configured_host_is_a_usage_error(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(config_module, "DEFAULT_CONFIG_PATH", tmp_path / "config.toml")
+    monkeypatch.setattr(config_module, "DEFAULT_KEY_FILE", tmp_path / "sgdb-api-key")
+
+    exit_code = main(["launch", "Elden Ring"])
+
+    assert exit_code == main_module.EXIT_USAGE_OR_CONFIG
+    assert "no host configured" in capsys.readouterr().err
+
+
+def test_launch_reports_moonlight_unreachable_when_binary_missing(
+    tmp_path, monkeypatch, capsys
+):
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('host = "MY-GAMING-PC"\n')
+    monkeypatch.setattr(config_module, "DEFAULT_CONFIG_PATH", config_path)
+    monkeypatch.setattr(config_module, "DEFAULT_KEY_FILE", tmp_path / "sgdb-api-key")
+    monkeypatch.setattr(moonlight, "find_binary", lambda: None)
+
+    exit_code = main(["launch", "Elden Ring"])
+
+    assert exit_code == main_module.EXIT_MOONLIGHT_UNREACHABLE
+    assert "moonlight CLI not found" in capsys.readouterr().err
 
 
 def test_no_subcommand_is_a_usage_error():

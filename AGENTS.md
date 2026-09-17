@@ -60,13 +60,14 @@ moonlight_steam_sync/
 ```
 
 `__main__.py` and `config.py` landed in PR-1; `vdf.py`, `shortcuts.py` and
-`steam.py` (the whole Steam side) in PR-2. Every subcommand in `__main__.py`
-except `doctor` is still a stub that exits 1 with "not implemented" until the
-PR that implements the rest of its chain lands (`moonlight.py` in PR-3,
-`art/` in PR-4, `sync.py` orchestration + the resumability e2e test in PR-5,
-`remove`/`status`/`list` polish in PR-6). Do not add code to a module ahead
-of its PR without checking the work plan first -- the modules are split the
-way they are so independent PRs can land in parallel.
+`steam.py` (the whole Steam side) in PR-2; `moonlight.py` (binary discovery,
+`list_apps()`, `stream()`, wired into the `launch` subcommand) in PR-3. Every
+subcommand in `__main__.py` except `doctor` and `launch` is still a stub that
+exits 1 with "not implemented" until the PR that implements the rest of its
+chain lands (`art/` in PR-4, `sync.py` orchestration + the resumability e2e
+test in PR-5, `remove`/`status`/`list` polish in PR-6). Do not add code to a
+module ahead of its PR without checking the work plan first -- the modules are
+split the way they are so independent PRs can land in parallel.
 
 ### Working on the Steam side (`vdf.py`, `shortcuts.py`, `steam.py`)
 
@@ -155,11 +156,18 @@ Starting with the PR that needs each one:
 
 - **`shortcuts.vdf`** (PR-2, `vdf.py`/`shortcuts.py`): `tests/fixtures/shortcuts_synthetic.vdf`, a three-entry binary store built by hand from the field order, type bytes and quoting in spec 2.1 by `tests/fixtures/build_synthetic_shortcuts.py` (raw `struct`/byte literals, deliberately not using `vdf.py`, so the fixture is not produced by the code it tests). Cross-checked against `ValvePython/vdf` (dev dependency, test oracle only). **TODO:** replace with a real, sanitised `shortcuts.vdf` from a device -- `moonlight-steam-sync doctor` prints its exact path on the `steam user:` line; shut Steam down before copying it, scrub home paths to `/home/deck/...` and host names to `MY-GAMING-PC`, save it as `tests/fixtures/shortcuts_real.vdf`, and delete the one `pytest.skip` in `tests/conftest.py`'s `real_shortcuts_vdf` fixture. Nothing else changes; the tests already read whichever file exists.
 - **`loginusers.vdf`** (PR-2, `steam.py`): `tests/fixtures/loginusers_synthetic.vdf`, text KeyValues shaped from spec 3.4 (a `users` block keyed by steam64, exactly one `MostRecent "1"`). **TODO:** replace with a sanitised real capture from `<steam root>/config/loginusers.vdf` -- invent steam64 ids that stay consistent with the `userdata/<steamid3>` directory names and blank out `AccountName`/`PersonaName`. Drop it in as `loginusers_real.vdf`; the tests prefer it automatically.
-- **`moonlight list --csv` output** (PR-3, `moonlight.py`): a synthetic CSV
-  built from the header and row shape in spec 2.1
+- **`moonlight list --csv` output** (PR-3, `moonlight.py`): a synthetic CSV,
+  `tests/fixtures/moonlight_list_sample.csv`, built from the header and row
+  shape in spec 2.1/2.3
   (`Name, ID, HDR Support, App Collection Game, Hidden, Direct Launch, Boxart URL`).
-  TODO: replace with real `moonlight list --host <host> --csv` output
-  captured per host, filenames scrubbed of the real host UUID.
+  See `tests/fixtures/README.md` for exactly what to swap in and how to
+  capture it. TODO: replace with real `moonlight list <host> --csv` output
+  captured per host, with the host UUID in the `Boxart URL` cache path
+  scrubbed. Also unverified against a real binary: the exact boolean
+  spelling (`True`/`False` vs. `true`/`1`) `--csv` emits, and whether `list
+  --csv` blocks long enough for box art to finish caching on a first run
+  (spec 2.3's own "[verify]" note) -- `moonlight.list_apps()`'s
+  `LIST_TIMEOUT_S = 30` is a guess, not a measurement.
 - **SteamGridDB / Steam store JSON responses** (PR-4, `art/`): synthetic
   response bodies shaped from the endpoints in spec 2.2
   (`/search/autocomplete`, `/games/id/{id}?platformdata=steam`,
