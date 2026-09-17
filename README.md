@@ -68,7 +68,7 @@ name_suffix = " (streaming)"     # appended to the Steam shortcut name, default 
 exe = "/home/deck/server-scripts/chimera/stream.sh"   # default: the tool's own path
 launch_options = '"{name}"'      # template; default 'launch "{name}"' when exe is the tool
 start_dir = ""                   # default: dirname(exe)
-ignore = ["Desktop", "Steam Big Picture"]   # Moonlight app names never to add
+ignore = []                      # Moonlight app names never to add; nothing is ignored by default
 restart_steam = true             # shut Steam down before writing and relaunch after
 request_interval_ms = 250        # polite pacing between SteamGridDB/Steam calls
 
@@ -79,7 +79,7 @@ community_fallback = true        # use community assets when no official one exi
 [overrides]                      # per-title pins when auto-match is wrong
 "Some Weird Launcher Name" = { steam = 1245620 }
 "Fan Game" = { sgdb = 5247018 }
-"Desktop" = { art = false }
+"Utility App" = { art = false }  # never look for art for this one
 ```
 
 Every key has a CLI flag override; flags win over the file, the file wins
@@ -89,6 +89,15 @@ CDN, it just skips community-submitted art. When set, the key is looked up in
 this order: the config file (or its flag), then the `SGDB_API_KEY`
 environment variable, then the contents of
 `~/.config/moonlight-steam-sync/sgdb-api-key`.
+
+Nothing is ignored by default. Every app the host publishes becomes a
+shortcut, including utility entries like `Desktop` or `Steam Big Picture`:
+they get a tile just like anything else, and they simply end up without
+artwork unless SteamGridDB happens to have a good match for the name. A title
+or a single slot with no match is reported in the run summary and is not an
+error -- set that art by hand in the Steam UI and the tool will never
+overwrite it. `ignore` is there for apps you would rather not see in Steam at
+all.
 
 Run `moonlight-steam-sync doctor` to see what the tool detects on your
 machine (Steam install, Python version, `moonlight` binary, whether an API
