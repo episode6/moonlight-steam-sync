@@ -368,12 +368,18 @@ $EDITOR CHANGELOG.md
 git add src/moonlight_steam_sync/__init__.py CHANGELOG.md
 git commit -m "Release vX.Y.Z"
 
-# 4. Tag and push. The tag push is what triggers release.yml's
-#    github-release job.
-git tag -a vX.Y.Z -m "vX.Y.Z"
+# 4. Push the bump, then create the release with the gh CLI. `gh release
+#    create` makes the tag and the release page in one step; the tag
+#    reaching GitHub is what triggers release.yml's github-release job,
+#    which builds the zipapp and uploads it into the release that now
+#    already exists (that step is idempotent -- see the comment on it).
 git push origin main
-git push origin vX.Y.Z
+gh release create vX.Y.Z --target main --title vX.Y.Z --generate-notes
 ```
+
+Pushing a plain `git tag` works too and takes the same path; the workflow
+creates the release itself in that case. Either way the assets are attached
+by CI, never by hand.
 
 After the push, watch the `Release` workflow run to completion
 (`gh run watch` or the Actions tab) and confirm the release page has
@@ -385,11 +391,10 @@ curl -fsSL https://raw.githubusercontent.com/episode6/moonlight-steam-sync/main/
 moonlight-steam-sync --version
 ```
 
-**`v0.1.0` is deliberately not cut yet.** It sits immediately on the other
-side of the human device checklist below -- a release is an irreversible
-public publish, and the repo owner holds it back until the checklist has
-passed on real hardware. PR-6 lands everything this section describes
-without running these steps.
+**`v0.1.0` was cut on 2026-09-17**, ahead of the device checklist rather
+than after it: the whole point of the release is that installing on a
+SteamOS box becomes one `curl` instead of a git checkout and a
+`PYTHONPATH`, which is what makes the checklist practical to run.
 
 ## Device checklist
 
