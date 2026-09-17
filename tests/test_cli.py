@@ -1,8 +1,8 @@
 """Tests for the argparse skeleton in __main__.py.
 
-Every subcommand from spec 3.3 must parse and, except for `doctor` (PR-1) and
-`launch` (PR-3), exit 1 with a "not implemented" message -- the rest of the
-CLI surface is wired but the modules behind it land in later PRs.
+Every subcommand from spec 3.3 must parse. `doctor` (PR-1), `launch` (PR-3),
+`art` and `status` are implemented; the rest still exit 1 with a "not
+implemented" message until the PR that implements their module lands.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from moonlight_steam_sync import config as config_module
 from moonlight_steam_sync import moonlight
 from moonlight_steam_sync.__main__ import build_parser, main
 
-NOT_YET_IMPLEMENTED = ["sync", "art", "list", "status", "ignore", "remove"]
+NOT_YET_IMPLEMENTED = ["sync", "list", "ignore", "remove"]
 
 # `ignore` and `remove` require their mutually-exclusive `--all | names` group
 # to be satisfied to even parse; every other stub takes no required args.
@@ -52,6 +52,18 @@ def test_stub_commands_exit_1(command, capsys):
     assert exit_code == 1
     captured = capsys.readouterr()
     assert "not implemented" in captured.err
+
+
+@pytest.mark.parametrize("command", ["art", "status"])
+def test_art_and_status_need_the_shortcut_layer(command, capsys):
+    """Implemented, but they need an appid -> grid dir lookup to run against.
+
+    Until the shortcut layer is wired in, both report that and exit 1 rather
+    than pretending they found an empty library. See
+    `moonlight_steam_sync.art.apply.default_target_provider`.
+    """
+    assert main([command]) == 1
+    assert "shortcut lookup" in capsys.readouterr().err
 
 
 def test_doctor_runs_and_exits_0(capsys, tmp_path, monkeypatch):

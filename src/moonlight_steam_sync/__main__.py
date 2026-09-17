@@ -1,9 +1,9 @@
 """argparse entry point: subcommands, exit codes, logging, SIGINT handling.
 
-``doctor`` (PR-1) and ``launch`` (PR-3, backed by :mod:`moonlight_steam_sync.moonlight`)
-do real work; every other subcommand parses its flags and then exits 1 with
-"not implemented", so the CLI surface (spec 3.3) is fixed before the modules
-behind it exist.
+``doctor`` (PR-1), ``launch`` (PR-3, backed by :mod:`moonlight_steam_sync.moonlight`),
+``art`` and ``status`` do real work; every other subcommand parses its flags
+and then exits 1 with "not implemented", so the CLI surface (spec 3.3) is
+fixed before the modules behind it exist.
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ import sys
 from pathlib import Path
 
 from moonlight_steam_sync import __version__, moonlight, steam
+from moonlight_steam_sync.art.cli import ProviderFactory, cmd_art, cmd_status
 from moonlight_steam_sync.config import DEFAULT_KEY_FILE, load_config
 
 NOT_IMPLEMENTED = "not implemented"
@@ -49,10 +50,24 @@ def build_parser() -> argparse.ArgumentParser:
     sync_p.add_argument("--no-restart-steam", action="store_true")
 
     art_p = sub.add_parser("art", help="(re)apply art to owned shortcuts")
-    art_p.add_argument("--force", action="store_true")
-    art_p.add_argument("--retry-missing", action="store_true")
-    art_p.add_argument("--only", metavar="NAME")
-    art_p.add_argument("--explain", action="store_true")
+    art_p.add_argument(
+        "--force",
+        action="store_true",
+        help="re-fetch every slot, ignoring both the match cache and files already in grid/",
+    )
+    art_p.add_argument(
+        "--retry-missing",
+        action="store_true",
+        help="re-query titles and slots whose 'nothing found' result is cached",
+    )
+    art_p.add_argument(
+        "--only", metavar="NAME", help="dress just this Moonlight app name"
+    )
+    art_p.add_argument(
+        "--explain",
+        action="store_true",
+        help="print the match chain and the URL tried for every slot",
+    )
 
     list_p = sub.add_parser("list", help="what the host publishes: added / ignored / new")
     _add_common_host_flag(list_p)
@@ -169,7 +184,17 @@ def cmd_launch(args: argparse.Namespace) -> int:
     return EXIT_OK  # pragma: no cover -- unreachable when execvp succeeds
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(
+    argv: list[str] | None = None,
+    *,
+    provider_factory: ProviderFactory | None = None,
+) -> int:
+    """Parse ``argv`` and run the subcommand.
+
+    ``provider_factory`` is the seam onto the shortcut layer used by ``art``
+    and ``status`` (see :mod:`moonlight_steam_sync.art.apply`); tests inject
+    a fake.
+    """
     parser = build_parser()
     args = parser.parse_args(argv)
 
@@ -183,6 +208,10 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_doctor(args)
     if args.command == "launch":
         return cmd_launch(args)
+    if args.command == "art":
+        return cmd_art(args, load_config(args), provider_factory=provider_factory)
+    if args.command == "status":
+        return cmd_status(args, load_config(args), provider_factory=provider_factory)
 
     return _print_not_implemented(args.command)
 
