@@ -8,13 +8,12 @@ project uses [semantic versioning](https://semver.org/).
 
 Nothing yet.
 
-## [0.1.0] - not yet released
+## [0.1.0] - 2026-09-17
 
-This entry is prepared for the first tagged release, `v0.1.0`. **The tag is
-deliberately not cut yet** -- it sits on the other side of the human device
-checklist (spec section 8), which runs after this PR lands. See AGENTS.md
-"Cutting a release" for the exact command sequence once that checklist
-passes.
+The first release. Cut ahead of the device checklist (spec section 8)
+deliberately, so that installing on a SteamOS box is a single `curl` of
+`install.sh` rather than a git checkout and a `PYTHONPATH`; the checklist
+itself is what this release exists to make easy to run.
 
 ### Added
 

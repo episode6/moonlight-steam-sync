@@ -87,11 +87,26 @@ jobs:
           path: dist
 
       - name: Create the release and attach the zipapp
+        # Idempotent on purpose. The tag can reach GitHub two ways: pushed on
+        # its own (`git push origin vX.Y.Z`), in which case no release exists
+        # yet and this creates one; or created by `gh release create` from a
+        # workstation, in which case the release already exists by the time
+        # this job runs and only the assets are missing. Re-running a failed
+        # release run lands in the second case too. So: try to create, and
+        # fall back to uploading into the existing release.
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${GITHUB_REF_NAME}" \
-            dist/moonlight-steam-sync.pyz dist/moonlight-steam-sync.pyz.sha256 \
-            --repo "${GITHUB_REPOSITORY}" \
-            --title "${GITHUB_REF_NAME}" \
-            --generate-notes
+          set -euo pipefail
+          assets="dist/moonlight-steam-sync.pyz dist/moonlight-steam-sync.pyz.sha256"
+          if gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            echo "Release ${GITHUB_REF_NAME} already exists; uploading assets into it."
+            gh release upload "${GITHUB_REF_NAME}" $assets \
+              --repo "${GITHUB_REPOSITORY}" \
+              --clobber
+          else
+            gh release create "${GITHUB_REF_NAME}" $assets \
+              --repo "${GITHUB_REPOSITORY}" \
+              --title "${GITHUB_REF_NAME}" \
+              --generate-notes
+          fi
