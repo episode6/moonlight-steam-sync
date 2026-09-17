@@ -10,13 +10,13 @@ with real captures by running::
     SGDB_API_KEY=... python3 scripts/record_fixtures.py
 
 which hits the real SteamGridDB, Steam store and Steam CDN endpoints for the
-same six titles and rewrites ``manifest.json`` plus ``responses/``. The tests
+same seven titles and rewrites ``manifest.json`` plus ``responses/``. The tests
 read the manifest, not these literals, so a real capture is a file
 replacement and not a test rewrite. Keep this script around afterwards: it
 documents what each title is *for*, and it is how the fixture set gets
 extended when a new match case shows up on a device.
 
-The six titles exercise the cases spec PR-4 asks for:
+The seven titles exercise the cases spec PR-4 asks for (the seventh serves PR-5):
 
 1. ``Elden Ring``          -- exact verified SteamGridDB match, every slot official.
 2. ``Hades II(tm)``        -- a title with a trademark glyph; also the 2x portrait
@@ -30,6 +30,10 @@ The six titles exercise the cases spec PR-4 asks for:
                               the Moonlight box art as the portrait of last resort.
 6. ``Rate Limited Game``   -- SteamGridDB and the store both answer 429 forever, so
                               the run hits the five-consecutive-429 hard stop.
+7. ``Hollow Knight``       -- the adoptable SteamTinkerLaunch-era entry in
+                              ``tests/fixtures/shortcuts_synthetic.vdf`` (PR-2), so the
+                              ``sync`` end-to-end tests can adopt it and dress it
+                              (every slot official, like Elden Ring).
 
 Run from the repo root::
 
@@ -379,6 +383,27 @@ def main() -> int:
     # -- 6. Rate Limited Game: 429 forever ----------------------------------
     rate_limited(search_url("Rate Limited Game"))
     rate_limited(steamstore.store_search_url("Rate Limited Game"))
+
+    # -- 7. Hollow Knight: the PR-2 fixture's adoptable entry, all official --
+    json_response(
+        search_url("Hollow Knight"),
+        "sgdb-search-hollow-knight",
+        envelope([game(5241, "Hollow Knight", 367520)]),
+    )
+    json_response(game_url(5241), "sgdb-game-5241", envelope(game(5241, "Hollow Knight", 367520)))
+    image_response(steamstore.portrait_urls(367520)[0], "tiny.jpg")
+    image_response(steamstore.landscape_urls(367520)[0], "tiny.jpg")
+    image_response(steamstore.hero_urls(367520)[0], "tiny.jpg")
+    image_response(steamstore.logo_urls(367520)[0], "tiny.png")
+    json_response(
+        steamstore.get_apps_url(367520),
+        "steam-getapps-367520",
+        {
+            "_TODO": TODO,
+            "response": {"apps": [{"appid": 367520, "name": "Hollow Knight", "icon": "4f4f4f4f"}]},
+        },
+    )
+    image_response(steamstore.icon_url(367520, "4f4f4f4f"), "tiny.jpg")
 
     manifest = {
         "_TODO": TODO,

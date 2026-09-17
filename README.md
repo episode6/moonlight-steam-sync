@@ -11,14 +11,12 @@ host such as [Sunshine](https://github.com/LizardByte/Sunshine), but nothing
 about it is SteamOS-specific beyond assuming a Linux Steam install and a
 `moonlight` client (native binary or the Flathub flatpak) on `PATH`.
 
-**Status:** early scaffold. `doctor` works -- it now also reports which Steam
-account `sync` would write to -- and so does `launch`, backed by the Moonlight
-side (binary discovery, game list, streaming). The Steam side underneath
-(binary VDF codec, the `shortcuts.vdf` reader/writer, Steam discovery and
-restart) is in place too, and the artwork engine behind `art` / `status` is
-implemented and tested on top of it. Every other subcommand below is still a
-stub that prints "not implemented" and exits 1 until its PR lands. See the
-work plan in [`AGENTS.md`](AGENTS.md) for what's coming and in what order.
+**Status:** feature complete for a git checkout; every subcommand below
+works (`sync`, `list`, `ignore`, `remove`, `art`, `status`, `launch`,
+`doctor`). Not yet verified against a real Steam Deck -- the device checklist
+in the design spec is the gate before the first release -- and the release
+zipapp plus `install.sh` land in the next PR. See [`AGENTS.md`](AGENTS.md)
+for the work plan.
 
 ## Install
 
@@ -77,8 +75,14 @@ the [Flathub flatpak](https://flathub.org/apps/com.moonlight_stream.Moonlight)
 if it is installed.
 
 **Steam must restart** to notice new shortcuts and new artwork files. `sync`
-does this once per run (`steam -shutdown`, write, relaunch) rather than per
-game; pass `--no-restart-steam` to skip it if Steam is not currently running.
+does this once per run (`steam -shutdown`, wait for it to exit, write,
+`steam -silent`) rather than per game, and only when something actually
+changed. If Steam is not running, the file is simply written and Steam is
+left alone. With `restart_steam = false` (or `--no-restart-steam`) the tool
+never stops or starts Steam: if Steam is running when there is something to
+write, it exits 2 without writing -- the artwork already on disk stays and is
+picked up on the next restart, so quitting Steam and rerunning finishes the
+job with no network calls.
 
 ## What it touches on disk
 
@@ -86,8 +90,8 @@ game; pass `--no-restart-steam` to skip it if Steam is not currently running.
 |---|---|
 | `<steam>/userdata/<steamid3>/config/shortcuts.vdf` | the non-Steam shortcut store; rewritten once per run |
 | `<steam>/userdata/<steamid3>/config/shortcuts.vdf.bak-<timestamp>` | a backup per write, newest five kept |
-| `<steam>/userdata/<steamid3>/config/grid/` | artwork: `<appid>p`, `<appid>`, `<appid>_hero`, `<appid>_logo`, `<appid>_icon` (written by the art phase, PR-4) |
-| `~/.cache/moonlight-steam-sync/matches.json` | the title -> Steam/SteamGridDB match cache (PR-4) |
+| `<steam>/userdata/<steamid3>/config/grid/` | artwork: `<appid>p`, `<appid>`, `<appid>_hero`, `<appid>_logo`, `<appid>_icon` |
+| `~/.cache/moonlight-steam-sync/matches.json` | the title -> Steam/SteamGridDB match cache (`XDG_CACHE_HOME` honoured) |
 
 `<steam>` is found automatically (`~/.local/share/Steam`, then `~/.steam/steam`
 and `~/.steam/root`, which are symlinks to it on SteamOS); set `STEAM_ROOT` to
@@ -115,6 +119,58 @@ moonlight-steam-sync remove    --all | "Name"...
 moonlight-steam-sync launch    "Name" [-- extra moonlight flags]
 moonlight-steam-sync doctor
 ```
+
+### A first import
+
+```sh
+moonlight-steam-sync doctor                 # finds Steam, the user, moonlight, the key
+moonlight-steam-sync list --host MY-GAMING-PC   # every app the host publishes: added / ignored / new
+moonlight-steam-sync sync --dry-run         # the plan, with the art URL per slot; writes nothing under Steam
+moonlight-steam-sync sync --limit 5         # five titles, to look at the tiles before doing 300
+moonlight-steam-sync sync                   # the rest
+```
+
+`sync` works out what to add as *(what the host publishes) minus (the
+`ignore` list) minus (what is already in Steam)*. "Already in Steam" means a
+shortcut whose `Exe` is the configured `exe` -- not a name match -- so
+shortcuts created earlier by other tools that already point at your stream
+script are adopted as-is (same appid, so they keep launching), get their
+artwork, and are never duplicated. There is no state file: delete a
+shortcut in the Steam UI and the next `sync` brings it back unless you
+ignore it.
+
+The order within a run is deliberate: first the artwork for every planned
+and adopted shortcut is fetched with Steam still running (grid files are
+inert until a restart), then Steam is shut down, `shortcuts.vdf` is written
+once, and Steam is relaunched. New tiles therefore appear fully dressed on
+that single restart, and interrupting the long art phase costs nothing:
+`shortcuts.vdf` is not touched until the art phase has finished.
+
+Each run ends with a summary: shortcuts added and adopted, art slots filled
+and still missing, titles with no match at all (an accepted outcome, see
+below), and how many are still pending behind `--limit`.
+
+Exit codes: `0` done (including "some titles or slots had no art"); `1`
+usage or config error, no Steam install, or an unreadable `shortcuts.vdf`
+(nothing is touched); `2` Steam is running and may not be restarted; `3`
+Moonlight unreachable; `4` stopped early by repeated 429s or a dead network
+(everything done so far is kept); `130` interrupted with Ctrl-C (same).
+After `4` or `130`, rerun the same command to continue.
+
+### Ignoring, removing, listing
+
+- `ignore --all` prints an `ignore = [...]` TOML block of your current
+  ignore list plus every host app that has no shortcut yet -- "draw a line
+  under everything on the PC today". `ignore "Name"...` prints the block
+  with those names added. Either way you paste it into `config.toml`
+  yourself; the tool never edits the config.
+- `remove "Name"...` (or `--all`) deletes the named owned shortcuts and their
+  five grid files, with the same one-restart write as `sync`. Shortcuts that
+  do not point at the configured `exe` are never touched. An unknown name is
+  an error before anything happens.
+- `list --host H` prints every app the host publishes with `added`,
+  `ignored` or `new` in front of it, and the same totals line `sync` starts
+  with.
 
 ### Artwork
 
@@ -152,8 +208,10 @@ thousand HTTP calls; at the default pacing that is on the order of 10-20
 minutes, and it is safe to interrupt (`Ctrl-C`) and resume with the same
 command -- nothing already written is redone: a downloaded image, a resolved
 title and a written shortcut each record themselves on disk as they happen.
-Use `--limit N` to bring in a handful of titles at a time instead of the
-whole library at once.
+The only moment Ctrl-C is held off is the few seconds between Steam being
+shut down and relaunched, so you can never end up with Steam down and the
+file unwritten. Use `--limit N` to bring in a handful of titles at a time
+instead of the whole library at once.
 
 The tool paces itself between calls (`request_interval_ms`), backs off on
 429s and 5xxs, and stops outright after five 429s in a row rather than burn
@@ -175,7 +233,12 @@ The artwork tests run against recorded API responses in
 recordings are currently synthetic -- see
 [`tests/fixtures/art/README.md`](tests/fixtures/art/README.md) for what each
 one covers and how to replace them with real captures via
-`SGDB_API_KEY=... python3 scripts/record_fixtures.py`.
+`SGDB_API_KEY=... python3 scripts/record_fixtures.py`. The end-to-end tests
+in `tests/test_sync_e2e.py` run the whole `sync` / `remove` / `ignore` /
+`list` chain against a temporary Steam tree, a fake `moonlight` on `PATH`
+and a fake Steam process, including the 500-title resumability test that
+kills a run after N calls and checks the rerun does exactly the remaining
+work.
 
 See [`AGENTS.md`](AGENTS.md) for the module map, coding rules, and the
 resumability contract every durable step in this codebase has to keep.

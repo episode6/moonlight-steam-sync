@@ -410,7 +410,9 @@ def test_the_icon_path_is_handed_back_to_the_shortcut_layer(tmp_path, grid_dir):
     appid = APPIDS["Elden Ring"]
     assert provider.icons[appid] == (grid_dir / f"{appid}_icon.jpg").resolve()
     assert provider.icons[appid].is_absolute()
-    assert provider.commits == 1
+    # run_art only *records* the patch; the caller commits once the summary
+    # is out (a commit can be refused with exit 2 and must not eat the report).
+    assert provider.commits == 0
 
 
 def test_an_override_can_skip_a_title_entirely(tmp_path, grid_dir):

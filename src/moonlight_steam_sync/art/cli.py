@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TextIO
 
+from moonlight_steam_sync import steam
 from moonlight_steam_sync.art.apply import (
     ArtTarget,
     RunSummary,
@@ -38,6 +39,7 @@ from moonlight_steam_sync.config import Config
 # Copied rather than imported from ``__main__`` (which imports this module).
 EXIT_OK = 0
 EXIT_USAGE_OR_CONFIG = 1
+EXIT_STEAM_RUNNING = 2
 EXIT_NETWORK_STOPPED = 4
 EXIT_SIGINT = 130
 
@@ -173,7 +175,31 @@ def cmd_art(
         # run_art catches the Ctrl-C around each title, so this -- not the
         # handler above -- is the branch a real SIGINT takes (spec 3.9.5).
         print("interrupted; resume with the same command", file=err)
+    if summary.stopped_early:
+        # The grid files written so far are durable; the icon patches are
+        # re-derived from them on the next run, so nothing is lost by not
+        # writing shortcuts.vdf now (spec 3.9 item 4: the write comes last).
+        return _exit_code(summary)
+
+    # One atomic shortcuts.vdf write for the icon patches (spec 3.6). The
+    # provider's writer decides how to get Steam out of the way; a refusal is
+    # exit 2, with the art already on disk and picked up by the next run.
+    try:
+        provider.commit()
+    except steam.SteamRunningError as exc:
+        print(f"art: {exc}", file=err)
+        return EXIT_STEAM_RUNNING
+    except KeyboardInterrupt:
+        print("interrupted while writing shortcuts.vdf; rerun the same command", file=err)
+        return EXIT_SIGINT
+    if summary.written and not _restarted(provider):
+        print("restart Steam to see the new artwork", file=err)
     return _exit_code(summary)
+
+
+def _restarted(provider: TargetProvider) -> bool:
+    """Whether the provider's commit already bounced Steam (the sync writer says)."""
+    return bool(getattr(provider, "restarted_steam", False))
 
 
 def _exit_code(summary: RunSummary) -> int:
