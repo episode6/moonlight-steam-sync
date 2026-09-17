@@ -11,7 +11,6 @@ from __future__ import annotations
 import argparse
 import platform
 import signal
-import subprocess
 import sys
 from pathlib import Path
 

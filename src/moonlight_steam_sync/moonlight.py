@@ -15,12 +15,34 @@ import os
 import shlex
 import shutil
 import subprocess
+import urllib.parse
+import urllib.request
 from collections.abc import Sequence
 from dataclasses import dataclass
 
 #: `moonlight list --csv` can block while box art downloads on a first run
-#: (spec 2.3's "[verify]" note); this is generous rather than tight.
-LIST_TIMEOUT_S = 30.0
+#: (spec 2.3's "[verify]" note), and moonlight-qt's own connect timeout
+#: (`COMPUTER_SEEK_TIMEOUT`, app/cli/listapps.cpp) is 30s, so a 30s budget
+#: here usually races moonlight's own "Failed to connect" and loses, and
+#: leaves no room for `getAppList()` on a 500-title host either. Generous
+#: rather than tight.
+LIST_TIMEOUT_S = 60.0
+
+#: moonlight-qt's `--csv` header, verbatim (app/cli/listapps.cpp's
+#: `printAppsCSV`): fields are separated by ``", "`` (comma-space), so every
+#: field but the first carries a leading space in the raw text. We parse
+#: with ``skipinitialspace=True`` so ``csv`` strips that leading space from
+#: both the header and every data cell, and these are the field names it
+#: leaves us with.
+_EXPECTED_FIELDNAMES = (
+    "Name",
+    "ID",
+    "HDR Support",
+    "App Collection Game",
+    "Hidden",
+    "Direct Launch",
+    "Boxart URL",
+)
 
 #: The flatpak's application id (spec 2.3).
 FLATPAK_APP_ID = "com.moonlight_stream.Moonlight"
@@ -33,6 +55,10 @@ class MoonlightNotFoundError(RuntimeError):
 class MoonlightUnreachableError(RuntimeError):
     """The moonlight CLI ran but the host did not answer in time or errored
     (spec 3.3 exit code 3)."""
+
+
+class MoonlightCsvFormatError(RuntimeError):
+    """`moonlight list --csv` output did not have the expected header."""
 
 
 @dataclass(frozen=True)
@@ -88,15 +114,30 @@ def _parse_bool(value: str) -> bool:
 
 def _parse_boxart(value: str) -> str | None:
     """A `file://` URL becomes a plain filesystem path; ``qrc:/res/no_app_image.png``
-    (not cached yet, spec 2.3) or anything else becomes ``None``."""
+    (not cached yet, spec 2.3) or anything else becomes ``None``.
+
+    The value is ``QUrl::fromLocalFile(...).toDisplayString()`` (moonlight-qt's
+    `app/backend/boxartmanager.cpp` + `listapps.cpp`), which percent-encodes
+    the path -- the real cache path always contains spaces
+    (``.../boxart/<uuid>/<id>.png`` under ``Moonlight Game Streaming
+    Project/Moonlight``) -- so this percent-decodes the URL's path component
+    rather than just stripping the scheme.
+    """
     value = value.strip()
-    if value.startswith("file://"):
-        return value[len("file://") :]
-    return None
+    if not value.startswith("file://"):
+        return None
+    return urllib.request.url2pathname(urllib.parse.urlsplit(value).path)
 
 
 def _parse_csv(text: str) -> list[App]:
     """Parse `moonlight list --csv` output into :class:`App` rows.
+
+    moonlight-qt's `--csv` header separates fields with ``", "``
+    (`app/cli/listapps.cpp`'s `printAppsCSV`), so every field but the first
+    carries a leading space; ``skipinitialspace=True`` strips it from both
+    the header and every data cell, and the header is validated once against
+    the exact upstream spelling so a format change fails loudly instead of
+    silently returning empty strings for every column but ``Name``.
 
     Rows flagged ``App Collection Game`` (a Steam-collection placeholder, not
     a streamable app) or ``Hidden`` are dropped entirely rather than returned
@@ -104,8 +145,20 @@ def _parse_csv(text: str) -> list[App]:
     skipped"); see the PR description's "Notes for review" for the
     alternative reading this rules out.
     """
+    reader = csv.DictReader(io.StringIO(text), skipinitialspace=True)
+    fieldnames = tuple(reader.fieldnames or ())
+    if fieldnames != _EXPECTED_FIELDNAMES:
+        missing = set(_EXPECTED_FIELDNAMES) - set(fieldnames)
+        if missing:
+            raise MoonlightCsvFormatError(
+                f"moonlight list --csv: missing column(s) {sorted(missing)!r} "
+                f"(got header {fieldnames!r})"
+            )
+        # Extra/reordered columns from a newer moonlight-qt: tolerate it,
+        # DictReader still looks fields up by name.
+
     apps: list[App] = []
-    for row in csv.DictReader(io.StringIO(text)):
+    for row in reader:
         if _parse_bool(row.get("App Collection Game", "")):
             continue
         hidden = _parse_bool(row.get("Hidden", ""))

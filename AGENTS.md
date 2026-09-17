@@ -157,17 +157,16 @@ Starting with the PR that needs each one:
 - **`shortcuts.vdf`** (PR-2, `vdf.py`/`shortcuts.py`): `tests/fixtures/shortcuts_synthetic.vdf`, a three-entry binary store built by hand from the field order, type bytes and quoting in spec 2.1 by `tests/fixtures/build_synthetic_shortcuts.py` (raw `struct`/byte literals, deliberately not using `vdf.py`, so the fixture is not produced by the code it tests). Cross-checked against `ValvePython/vdf` (dev dependency, test oracle only). **TODO:** replace with a real, sanitised `shortcuts.vdf` from a device -- `moonlight-steam-sync doctor` prints its exact path on the `steam user:` line; shut Steam down before copying it, scrub home paths to `/home/deck/...` and host names to `MY-GAMING-PC`, save it as `tests/fixtures/shortcuts_real.vdf`, and delete the one `pytest.skip` in `tests/conftest.py`'s `real_shortcuts_vdf` fixture. Nothing else changes; the tests already read whichever file exists.
 - **`loginusers.vdf`** (PR-2, `steam.py`): `tests/fixtures/loginusers_synthetic.vdf`, text KeyValues shaped from spec 3.4 (a `users` block keyed by steam64, exactly one `MostRecent "1"`). **TODO:** replace with a sanitised real capture from `<steam root>/config/loginusers.vdf` -- invent steam64 ids that stay consistent with the `userdata/<steamid3>` directory names and blank out `AccountName`/`PersonaName`. Drop it in as `loginusers_real.vdf`; the tests prefer it automatically.
 - **`moonlight list --csv` output** (PR-3, `moonlight.py`): a synthetic CSV,
-  `tests/fixtures/moonlight_list_sample.csv`, built from the header and row
-  shape in spec 2.1/2.3
-  (`Name, ID, HDR Support, App Collection Game, Hidden, Direct Launch, Boxart URL`).
-  See `tests/fixtures/README.md` for exactly what to swap in and how to
-  capture it. TODO: replace with real `moonlight list <host> --csv` output
-  captured per host, with the host UUID in the `Boxart URL` cache path
-  scrubbed. Also unverified against a real binary: the exact boolean
-  spelling (`True`/`False` vs. `true`/`1`) `--csv` emits, and whether `list
-  --csv` blocks long enough for box art to finish caching on a first run
-  (spec 2.3's own "[verify]" note) -- `moonlight.list_apps()`'s
-  `LIST_TIMEOUT_S = 30` is a guess, not a measurement.
+  `tests/fixtures/moonlight_list_sample.csv`, built to match the exact byte
+  shape moonlight-qt's source emits (header separator `", "`, lowercase
+  `true`/`false`, percent-encoded `Boxart URL`) -- see
+  `tests/fixtures/README.md` for the citations and exactly what to swap in
+  once real captures are available. TODO: replace with real `moonlight list
+  <host> --csv` output captured per host, with the host UUID in the `Boxart
+  URL` cache path scrubbed. Still unverified against a real binary: whether
+  `list --csv` blocks long enough for box art to finish caching on a first
+  run (spec 2.3's own "[verify]" note) -- `moonlight.list_apps()`'s
+  `LIST_TIMEOUT_S = 60` is a generous guess, not a measurement.
 - **SteamGridDB / Steam store JSON responses** (PR-4, `art/`): synthetic
   response bodies shaped from the endpoints in spec 2.2
   (`/search/autocomplete`, `/games/id/{id}?platformdata=steam`,

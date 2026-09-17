@@ -87,6 +87,8 @@ def test_list_apps_parses_and_filters_sample_csv(tmp_path, monkeypatch):
 
     elden_ring = apps[0]
     assert elden_ring.id == "1"
+    # The real Boxart URL column is percent-encoded (QUrl::toDisplayString())
+    # and its cache path always contains spaces; this must come back decoded.
     assert elden_ring.boxart_path == (
         "/home/deck/.var/app/com.moonlight_stream.Moonlight/cache/"
         "Moonlight Game Streaming Project/Moonlight/boxart/abc-host-uuid/1.png"
@@ -94,6 +96,31 @@ def test_list_apps_parses_and_filters_sample_csv(tmp_path, monkeypatch):
 
     desktop = apps[1]
     assert desktop.boxart_path is None  # qrc:/res/no_app_image.png -> not cached
+
+
+def test_list_apps_builds_expected_argv(tmp_path, monkeypatch):
+    monkeypatch.delenv("MOONLIGHT_BIN", raising=False)
+    captured = tmp_path / "argv.txt"
+    _write_fake_moonlight(
+        tmp_path,
+        script_body=f'echo "$@" > {captured}\ncat <<\'EOF\'\n{SAMPLE_CSV}EOF\n',
+    )
+    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
+
+    moonlight.list_apps("MY-GAMING-PC")
+
+    assert captured.read_text().split() == ["list", "MY-GAMING-PC", "--csv"]
+
+
+def test_list_apps_raises_format_error_on_unexpected_header(tmp_path, monkeypatch):
+    monkeypatch.delenv("MOONLIGHT_BIN", raising=False)
+    _write_fake_moonlight(
+        tmp_path, script_body="printf 'Name,ID\\nElden Ring,1\\n'\n"
+    )
+    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
+
+    with pytest.raises(moonlight.MoonlightCsvFormatError, match="Hidden"):
+        moonlight.list_apps("MY-GAMING-PC")
 
 
 def test_list_apps_raises_not_found_without_a_binary(tmp_path, monkeypatch):
@@ -136,6 +163,16 @@ def test_parse_bool_spellings(value, expected):
     "value,expected",
     [
         ("file:///a/b/1.png", "/a/b/1.png"),
+        # QUrl::toDisplayString() percent-encodes spaces (and other
+        # reserved characters) in the path; these must come back decoded.
+        (
+            "file:///home/deck/.var/app/com.moonlight_stream.Moonlight/cache/"
+            "Moonlight%20Game%20Streaming%20Project/Moonlight/boxart/"
+            "abc-host-uuid/1.png",
+            "/home/deck/.var/app/com.moonlight_stream.Moonlight/cache/"
+            "Moonlight Game Streaming Project/Moonlight/boxart/"
+            "abc-host-uuid/1.png",
+        ),
         ("qrc:/res/no_app_image.png", None),
         ("", None),
     ],

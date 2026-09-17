@@ -46,18 +46,27 @@ tokenizer test picks it up automatically.
 
 ## `moonlight_list_sample.csv`
 
-**SYNTHETIC -- TODO: replace with real data.** Hand-built from the header and
-row shape documented in spec section 2.1/2.3 (moonlight-qt's
-`app/cli/listapps.cpp`): `Name, ID, HDR Support, App Collection Game, Hidden,
-Direct Launch, Boxart URL`, one `file://` boxart path and one
-`qrc:/res/no_app_image.png` (not cached) row, one `Hidden=True` row and one
-`App Collection Game=True` row to exercise the filtering in
-`moonlight.list_apps()`.
+**SYNTHETIC -- TODO: replace with real data.** Hand-built to match the exact
+byte shape moonlight-qt's `--csv` flag emits, per its source
+(`app/cli/listapps.cpp`'s `printAppCSV`/`printAppsCSV` and
+`app/backend/boxartmanager.cpp`), not just the field names:
 
-The exact boolean spelling (`True`/`False` vs `true`/`1`) that moonlight-qt's
-`--csv` flag actually emits is unverified -- `moonlight.py`'s `_parse_bool`
-accepts several common spellings defensively, but this has never been
-checked against a real binary.
+- Header is `Name, ID, HDR Support, App Collection Game, Hidden, Direct
+  Launch, Boxart URL` with a literal `", "` (comma-space) separator, so
+  every field but `Name` carries a leading space in the raw text --
+  `moonlight.py` parses with `skipinitialspace=True` and validates the
+  header once, rather than indexing columns positionally.
+- Booleans are lowercase `true`/`false` (confirmed against the source, not
+  guessed).
+- `Boxart URL` is `QUrl::fromLocalFile(...).toDisplayString()`, which
+  percent-encodes the path -- the real cache path always contains spaces
+  (`.../cache/Moonlight Game Streaming Project/Moonlight/boxart/<uuid>/<id>.png`),
+  so the fixture's `file://` rows use `%20` and `moonlight.py`'s
+  `_parse_boxart` percent-decodes rather than just stripping the scheme.
+
+One `file://` boxart path and one `qrc:/res/no_app_image.png` (not cached)
+row, one `Hidden=true` row and one `App Collection Game=true` row exercise
+the filtering in `moonlight.list_apps()`.
 
 TODO: replace this file with real `moonlight list --host <host> --csv`
 output captured from each of the user's Moonlight hosts (once available),
