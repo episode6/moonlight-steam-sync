@@ -11,9 +11,12 @@ host such as [Sunshine](https://github.com/LizardByte/Sunshine), but nothing
 about it is SteamOS-specific beyond assuming a Linux Steam install and a
 `moonlight` client (native binary or the Flathub flatpak) on `PATH`.
 
-**Status:** early scaffold. `doctor` works; every other subcommand below is a
-stub that prints "not implemented" and exits 1 until its PR lands. See the
-work plan in [`AGENTS.md`](AGENTS.md) for what's coming and in what order.
+**Status:** early scaffold. `doctor` works -- it now also reports which Steam
+account `sync` would write to -- and the Steam side underneath (binary VDF
+codec, the `shortcuts.vdf` reader/writer, Steam discovery and restart) is in
+place. Every other subcommand below is still a stub that prints "not
+implemented" and exits 1 until its PR lands. See the work plan in
+[`AGENTS.md`](AGENTS.md) for what's coming and in what order.
 
 ## Install
 
@@ -68,6 +71,29 @@ key is configured, whether Steam is currently running).
 **Steam must restart** to notice new shortcuts and new artwork files. `sync`
 does this once per run (`steam -shutdown`, write, relaunch) rather than per
 game; pass `--no-restart-steam` to skip it if Steam is not currently running.
+
+## What it touches on disk
+
+| path | why |
+|---|---|
+| `<steam>/userdata/<steamid3>/config/shortcuts.vdf` | the non-Steam shortcut store; rewritten once per run |
+| `<steam>/userdata/<steamid3>/config/shortcuts.vdf.bak-<timestamp>` | a backup per write, newest five kept |
+| `<steam>/userdata/<steamid3>/config/grid/` | artwork: `<appid>p`, `<appid>`, `<appid>_hero`, `<appid>_logo`, `<appid>_icon` (written by the art phase, PR-4) |
+| `~/.cache/moonlight-steam-sync/matches.json` | the title -> Steam/SteamGridDB match cache (PR-4) |
+
+`<steam>` is found automatically (`~/.local/share/Steam`, then `~/.steam/steam`
+and `~/.steam/root`, which are symlinks to it on SteamOS); set `STEAM_ROOT` to
+override that. With more than one Steam account on the machine, the one
+`config/loginusers.vdf` marks `MostRecent` is used -- `doctor` prints which.
+
+Steam holds `shortcuts.vdf` in memory and rewrites it on exit, so edits made
+while it is running are lost: that is why the tool shuts Steam down before
+writing. The file is written atomically (temp file plus rename) and never
+rewritten at all when nothing changed, and artwork you picked by hand in the
+Steam UI is never overwritten (same filenames, and an existing image means
+"done"). Only images count for that: the `<appid>.json` the Steam UI drops
+next to a logo records where the logo sits, so it never stands in for the
+landscape art that shares its name.
 
 ## Usage
 
