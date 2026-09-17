@@ -29,7 +29,6 @@ DEFAULT_KEY_FILE = DEFAULT_CONFIG_DIR / "sgdb-api-key"
 
 #: Names Sunshine ships out of the box (spec 6.13); only used to *document*
 #: the example config, never applied unless the user pastes it themselves.
-EXAMPLE_IGNORE = ["Desktop", "Steam Big Picture"]
 
 #: Sentinel meaning "the flag was not passed on the command line", so a flag
 #: whose default happens to equal the config default does not clobber it.
