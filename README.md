@@ -15,9 +15,10 @@ about it is SteamOS-specific beyond assuming a Linux Steam install and a
 account `sync` would write to -- and so does `launch`, backed by the Moonlight
 side (binary discovery, game list, streaming). The Steam side underneath
 (binary VDF codec, the `shortcuts.vdf` reader/writer, Steam discovery and
-restart) is in place too. Every other subcommand below is still a stub that
-prints "not implemented" and exits 1 until its PR lands. See the work plan in
-[`AGENTS.md`](AGENTS.md) for what's coming and in what order.
+restart) is in place too, and the artwork engine behind `art` / `status` is
+implemented and tested on top of it. Every other subcommand below is still a
+stub that prints "not implemented" and exits 1 until its PR lands. See the
+work plan in [`AGENTS.md`](AGENTS.md) for what's coming and in what order.
 
 ## Install
 
@@ -115,11 +116,47 @@ moonlight-steam-sync launch    "Name" [-- extra moonlight flags]
 moonlight-steam-sync doctor
 ```
 
+### Artwork
+
+Each shortcut gets the five files Steam's own library UI reads out of
+`userdata/<id>/config/grid/`: a portrait capsule, a landscape header, a hero
+banner, a logo and an icon. Per slot, the first source that has an image
+wins:
+
+1. **Steam's own CDN**, when the title resolves to a Steam appid -- the
+   official store art, byte-for-byte what Steam shows for the real game.
+2. **SteamGridDB**, for anything the CDN has no image for (and for non-Steam
+   titles), preferring the styles that look like official box art and taking
+   the highest-scored result.
+3. **The Moonlight host's own box art**, as a last resort for the portrait.
+
+Rules worth knowing:
+
+- **Artwork you set by hand is never overwritten.** A slot that already has a
+  file in `grid/` is skipped, because the Steam UI writes those very
+  filenames. `art --force` is the way to re-fetch anyway.
+- **A title or a slot with no art is not an error.** It is listed in the
+  summary; fill it in from the Steam UI and the rule above keeps it.
+- Unmatched titles and empty slots are remembered for 7 days so a re-run does
+  not search for them again; `--retry-missing` asks anyway.
+- `art --explain` prints the whole match chain for each title: what was
+  searched, what matched, and which URL each slot came from.
+- Pin a title that matches badly with `[overrides]` in the config, or turn
+  art off for it entirely with `{ art = false }`.
+- No WebP and no animated art: Steam cannot read either out of `grid/`.
+
 A large Moonlight library (500+ titles) means a first `sync` can be a couple
 thousand HTTP calls; at the default pacing that is on the order of 10-20
 minutes, and it is safe to interrupt (`Ctrl-C`) and resume with the same
-command -- nothing already written is redone. Use `--limit N` to bring in a
-handful of titles at a time instead of the whole library at once.
+command -- nothing already written is redone: a downloaded image, a resolved
+title and a written shortcut each record themselves on disk as they happen.
+Use `--limit N` to bring in a handful of titles at a time instead of the
+whole library at once.
+
+The tool paces itself between calls (`request_interval_ms`), backs off on
+429s and 5xxs, and stops outright after five 429s in a row rather than burn
+your API key -- everything already written is kept, and re-running the same
+command picks up where it left off.
 
 ## Development
 
@@ -129,6 +166,13 @@ pip install -e ".[dev]"
 ruff check .
 pytest
 ```
+
+The artwork tests run against recorded API responses in
+`tests/fixtures/art/`, so the suite never touches the network. Those
+recordings are currently synthetic -- see
+[`tests/fixtures/art/README.md`](tests/fixtures/art/README.md) for what each
+one covers and how to replace them with real captures via
+`SGDB_API_KEY=... python3 scripts/record_fixtures.py`.
 
 See [`AGENTS.md`](AGENTS.md) for the module map, coding rules, and the
 resumability contract every durable step in this codebase has to keep.

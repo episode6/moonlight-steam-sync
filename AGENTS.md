@@ -51,22 +51,29 @@ moonlight_steam_sync/
   moonlight.py     find binary (native `moonlight`, else flatpak), list(host) -> [App(name, id, hidden, boxart_path)],
                    stream(host, name, extra)
   art/
+    http.py        urllib transport seam, User-Agent, timeouts, pacing, backoff, the 429 hard stop
     sgdb.py        API client (urllib): search, game(platformdata), grids/heroes/logos/icons
     steamstore.py  storesearch, GetApps icon hash, CDN URL builders
-    resolve.py     title -> Match{steam_appid?, sgdb_id?, confidence, how}; match cache (flushed per title)
+    resolve.py     title -> Match{steam_appid?, sgdb_id?, how}; match cache (flushed per title)
     select.py      per-slot asset choice policy; download; mime sniff -> ext
     apply.py       write grid files for an appid (skip existing), set icon field
+    cli.py         the `art` and `status` subcommands
   sync.py          the orchestration: list -> diff -> art -> write -> restart; progress lines
 ```
 
+`art/http.py` and `art/cli.py` are two small additions to the spec 3.4 map:
+one place for the shared urllib/pacing/backoff plumbing so `sgdb.py` and
+`steamstore.py` stay thin, and one place for the argparse glue so
+`__main__.py` stays a dispatcher.
+
 `__main__.py` and `config.py` landed in PR-1; `vdf.py`, `shortcuts.py` and
 `steam.py` (the whole Steam side) in PR-2; `moonlight.py` (binary discovery,
-`list_apps()`, `stream()`, wired into the `launch` subcommand) in PR-3. Every
-subcommand in `__main__.py` except `doctor` and `launch` is still a stub that
-exits 1 with "not implemented" until the PR that implements the rest of its
-chain lands (`art/` in PR-4, `sync.py` orchestration + the resumability e2e
-test in PR-5, `remove`/`status`/`list` polish in PR-6). Do not add code to a
-module ahead of its PR without checking the work plan first -- the modules are
+`list_apps()`, `stream()`, wired into the `launch` subcommand) in PR-3; `art/`
+(the artwork engine plus the `art` and `status` subcommands) in PR-4. Every
+other subcommand in `__main__.py` is still a stub that exits 1 with "not
+implemented" until the PR that implements the rest of its chain lands
+(`sync.py` orchestration + the resumability e2e test in PR-5,
+`remove`/`list` polish in PR-6). Do not add code to a module ahead of its PR without checking the work plan first -- the modules are
 split the way they are so independent PRs can land in parallel.
 
 ### Working on the Steam side (`vdf.py`, `shortcuts.py`, `steam.py`)
@@ -87,6 +94,27 @@ split the way they are so independent PRs can land in parallel.
 - **`ShortcutsFile.write()` writes nothing when the bytes are unchanged** and
   is the only non-incremental step in a run (contract item 4 below). It
   rotates five timestamped backups and `os.replace`s a temp file into place.
+
+### The artwork seam onto the shortcut layer
+
+`art/` never parses `shortcuts.vdf` and never discovers the Steam root. It
+asks for exactly four things per title, through
+`art.apply.ArtTarget(name, appid, grid_dir, boxart_path)`, and hands exactly
+one thing back, through `art.apply.TargetProvider`:
+
+```python
+class TargetProvider(Protocol):
+    def targets(self) -> Sequence[ArtTarget]: ...
+    def set_icon(self, appid: int, icon_path: Path) -> None: ...
+    def commit(self) -> None: ...
+```
+
+`appid` is the shortcut's own 32-bit id (`crc32(Exe + AppName) |
+0x80000000`), which is knowable *before* the shortcut exists -- that is what
+lets the art phase run first (spec 3.6). `set_icon` must only *record* the
+icon patch: spec 3.6 wants one atomic `shortcuts.vdf` write per run, which is
+what `commit()` is for. `art` and `status` exit 1 with a clear message while
+no provider is wired up.
 
 ## The resumability contract (spec 3.9)
 
@@ -130,7 +158,26 @@ the ones that mention resumability by name -- must keep these invariants:
 The end-to-end resumability test (kill mid-run, rerun, assert only the
 remainder happens) lives in PR-5 against a 500-title fixture, but any module
 that touches disk state should have its own idempotency test well before
-then.
+then. `art/` already carries its share: a second pass over the same titles
+makes zero HTTP calls, an existing slot file is never re-downloaded, an
+exception mid-download leaves only a `.part`, and `matches.json` is on disk
+after every title (`tests/test_art_apply.py`).
+
+### Artwork gotchas
+
+- **Never write `.webp` into `grid/`.** Steam cannot read it. The asset
+  queries pin `types=static` and `mimes=image/png,image/jpeg`, and the
+  downloader sniffs magic bytes, so a mislabelled `.png` that is really WebP
+  is dropped and the next source is tried.
+- **Grid filenames use the *shortcut's* appid, never the Steam store appid**
+  the art came from (`<appid>p`, `<appid>`, `<appid>_hero`, `<appid>_logo`,
+  `<appid>_icon`).
+- **A slot that already has a file is never touched without `--force`.** The
+  Steam UI writes the same filenames, so that rule is what keeps hand-picked
+  art safe -- and it doubles as the resume mechanism.
+- **A transient failure is never cached as a miss.** A 5xx, a timeout or a
+  429 that exhausted its retries leaves no negative entry; only "the source
+  genuinely has no image for this slot" starts the 7-day window.
 
 ## Testing
 
@@ -170,9 +217,21 @@ Starting with the PR that needs each one:
 - **SteamGridDB / Steam store JSON responses** (PR-4, `art/`): synthetic
   response bodies shaped from the endpoints in spec 2.2
   (`/search/autocomplete`, `/games/id/{id}?platformdata=steam`,
-  `/grids|heroes|logos|icons/game/{id}`, `storesearch`, `GetApps`). TODO:
-  replace/extend with real captures via `scripts/record_fixtures.py` (PR-6)
-  once an `SGDB_API_KEY` is available in the recording environment.
+  `/grids|heroes|logos|icons/game/{id}`, `storesearch`, `GetApps`), living in
+  `tests/fixtures/art/`. `manifest.json` maps a URL to a recorded response;
+  any URL it does not list answers 404, which is what the Steam CDN does for
+  an asset a game does not have. Six titles cover exact-verified match, a
+  title with a trademark glyph, a non-Steam game with community art only, a
+  Steam game with no logo on the CDN, a title with zero results, and a 429
+  storm; `tests/fixtures/art/README.md` says which is which.
+  **TODO: replace with real captures** by running
+  `SGDB_API_KEY=xxxxxxxx python3 scripts/record_fixtures.py` from the repo
+  root once a key is available. The tests resolve responses by URL through
+  the manifest and never read fixture literals, so that is a file
+  replacement, not a test rewrite. `tests/fixtures/art/make_synthetic.py`
+  regenerates the synthetic set and documents what each title is for.
+  The 1x1 images in `tests/fixtures/art/images/` are stand-ins on purpose and
+  do **not** need replacing: only their magic bytes are read.
 
 Every synthetic fixture, wherever it lands, must carry a comment or file
 naming exactly what real capture should replace it and how to get it -- copy
