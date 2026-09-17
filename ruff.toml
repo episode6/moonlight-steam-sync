@@ -1,0 +1,10 @@
+target-version = "py311"
+line-length = 100
+src = ["src", "tests"]
+
+[lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = []
+
+[lint.isort]
+known-first-party = ["moonlight_steam_sync"]
