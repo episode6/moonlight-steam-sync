@@ -78,8 +78,8 @@ game; pass `--no-restart-steam` to skip it if Steam is not currently running.
 |---|---|
 | `<steam>/userdata/<steamid3>/config/shortcuts.vdf` | the non-Steam shortcut store; rewritten once per run |
 | `<steam>/userdata/<steamid3>/config/shortcuts.vdf.bak-<timestamp>` | a backup per write, newest five kept |
-| `<steam>/userdata/<steamid3>/config/grid/` | artwork: `<appid>p`, `<appid>`, `<appid>_hero`, `<appid>_logo`, `<appid>_icon` |
-| `~/.cache/moonlight-steam-sync/matches.json` | the title -> Steam/SteamGridDB match cache |
+| `<steam>/userdata/<steamid3>/config/grid/` | artwork: `<appid>p`, `<appid>`, `<appid>_hero`, `<appid>_logo`, `<appid>_icon` (written by the art phase, PR-4) |
+| `~/.cache/moonlight-steam-sync/matches.json` | the title -> Steam/SteamGridDB match cache (PR-4) |
 
 `<steam>` is found automatically (`~/.local/share/Steam`, then `~/.steam/steam`
 and `~/.steam/root`, which are symlinks to it on SteamOS); set `STEAM_ROOT` to
@@ -90,8 +90,10 @@ Steam holds `shortcuts.vdf` in memory and rewrites it on exit, so edits made
 while it is running are lost: that is why the tool shuts Steam down before
 writing. The file is written atomically (temp file plus rename) and never
 rewritten at all when nothing changed, and artwork you picked by hand in the
-Steam UI is never overwritten (same filenames, and an existing file means
-"done").
+Steam UI is never overwritten (same filenames, and an existing image means
+"done"). Only images count for that: the `<appid>.json` the Steam UI drops
+next to a logo records where the logo sits, so it never stands in for the
+landscape art that shares its name.
 
 ## Usage
 

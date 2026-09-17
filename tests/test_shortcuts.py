@@ -172,6 +172,30 @@ def test_absent_fields_stay_absent(store):
     assert shortcut.allow_overlay == 0  # not the "new shortcut" default of 1
 
 
+def test_an_absent_field_that_is_given_a_value_is_written(tmp_path):
+    """Patching ``icon`` on an entry that had no ``icon`` key must add it (spec 3.6).
+
+    Adopted SteamTinkerLaunch-era entries are exactly the case: the field is
+    absent, PR-5 sets it, and dropping it would silently lose the icon.
+    """
+    minimal = {"appid": 5, "AppName": "Thing", "Exe": '"/bin/true"'}
+    payload = vdf.dumps({"shortcuts": {"0": minimal}})
+    store = ShortcutsFile.from_bytes(payload)
+    assert store.changed is False
+
+    store.shortcuts[0].icon = "/grid/5_icon.png"
+    assert store.changed is True
+    rebuilt = vdf.loads(store.to_bytes())["shortcuts"]["0"]
+    assert rebuilt == {**minimal, "icon": "/grid/5_icon.png"}
+
+    # Tags are a map; an added tag comes back too, and the fields still at
+    # their absent values stay out of the file.
+    store.shortcuts[0].tags = {"0": "streaming"}
+    rebuilt = vdf.loads(store.to_bytes())["shortcuts"]["0"]
+    assert rebuilt["tags"] == {"0": "streaming"}
+    assert "AllowOverlay" not in rebuilt
+
+
 def test_a_wide_integer_field_keeps_its_stored_width(tmp_path):
     """A future Steam field stored as u64 must not be narrowed to int32."""
     payload = vdf.dumps(

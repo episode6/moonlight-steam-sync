@@ -96,8 +96,12 @@ the ones that mention resumability by name -- must keep these invariants:
 
 1. **Every durable step is idempotent and its completion is visible on
    disk**, never only in memory. A slot is done when
-   `grid/<appid><suffix>.<ext>` exists; a title is resolved when it is in
-   `matches.json`; a shortcut exists when it is in `shortcuts.vdf`.
+   `grid/<appid><suffix>.<ext>` exists and `<ext>` is one Steam actually
+   displays (`steam.GRID_IMAGE_EXTENSIONS`; `steam.find_grid_file` is the
+   only place that answers this, so `<appid>.json` -- the logo-position
+   sidecar -- never passes for the landscape slot whose stem it shares); a
+   title is resolved when it is in `matches.json`; a shortcut exists when it
+   is in `shortcuts.vdf`.
    Re-running after any failure (network drop, `Ctrl-C`, a 429 storm, the
    device sleeping) does only the remaining work.
 2. **The match cache is flushed after every title**, not batched to the end.

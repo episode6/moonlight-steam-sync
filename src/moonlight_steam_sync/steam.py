@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any
 
 __all__ = [
+    "GRID_IMAGE_EXTENSIONS",
     "GRID_SLOTS",
     "ProcessRunner",
     "STEAM64_OFFSET",
@@ -70,6 +71,14 @@ GRID_SLOTS: dict[str, str] = {
     "logo": "_logo",
     "icon": "_icon",
 }
+
+#: The extensions that count as artwork in ``config/grid/``. Steam honours
+#: PNG and JPG (spec 2.1) and ``.ico`` for the icon slot; nothing else in that
+#: directory is art. The allowlist exists because the landscape slot's stem is
+#: the bare appid, so ``<appid>.json`` -- the logo-*position* sidecar the Steam
+#: UI writes, not an image -- would otherwise look like a filled slot and stop
+#: the landscape art from ever being fetched.
+GRID_IMAGE_EXTENSIONS: frozenset[str] = frozenset({".png", ".jpg", ".jpeg", ".ico"})
 
 
 class SteamError(Exception):
@@ -348,18 +357,24 @@ def grid_stem(appid: int, slot: str) -> str:
 
 
 def find_grid_file(grid_dir: str | os.PathLike[str], appid: int, slot: str) -> Path | None:
-    """The existing artwork file for this slot, whatever its extension.
+    """The existing artwork *image* for this slot, whatever its extension.
 
     "A slot whose file already exists in ``grid/`` is skipped" (spec 3.5) is
     both the resume rule and the don't-clobber-hand-picked-art rule, so the
-    check has to be extension-agnostic. ``<appid>`` (landscape) is matched
-    exactly so that it never picks up ``<appid>p`` or ``<appid>_hero``.
+    check has to be extension-agnostic -- but only across the extensions that
+    are actually art (:data:`GRID_IMAGE_EXTENSIONS`). ``<appid>`` (landscape)
+    is matched exactly so that it never picks up ``<appid>p`` or
+    ``<appid>_hero``, and the extension allowlist keeps two non-images out:
+    ``<appid>.json`` (the logo-position sidecar the Steam UI writes, spec 2.1)
+    and ``<stem>.<ext>.part`` (a download still in flight, spec 3.9 item 3).
     """
     stem = grid_stem(appid, slot)
     directory = Path(grid_dir)
     if not directory.is_dir():
         return None
     for candidate in sorted(directory.glob(f"{stem}.*")):
+        if candidate.suffix.lower() not in GRID_IMAGE_EXTENSIONS:
+            continue
         if candidate.is_file() and candidate.stem == stem:
             return candidate
     return None
@@ -449,6 +464,11 @@ def shutdown(
         return True
     try:
         runner.run(["steam", "-shutdown"], timeout=15)
+    except subprocess.TimeoutExpired:
+        # The request was very likely delivered -- `steam -shutdown` hands it
+        # to the running client and can then sit there. Whether Steam is
+        # actually gone is the poll loop's question, not this one's.
+        pass
     except (OSError, subprocess.SubprocessError) as exc:
         raise SteamError(f"could not run 'steam -shutdown': {exc}") from exc
     deadline = runner.monotonic() + timeout

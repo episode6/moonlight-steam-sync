@@ -91,6 +91,18 @@ FIELDS: tuple[tuple[str, str, str], ...] = (
 _BY_LOWER_KEY = {key.lower(): (key, attr, kind) for key, attr, kind in FIELDS}
 
 
+def _absent_default(kind: str) -> Any:
+    """The value a field of this *kind* takes when the entry omits it.
+
+    Not the "new shortcut" defaults: a parsed entry must never gain a value
+    it did not have, and an entry still holding these writes the field back
+    out as absent.
+    """
+    if kind == "map":
+        return {}
+    return "" if kind == "str" else 0
+
+
 class ShortcutsError(Exception):
     """Base class for shortcut-store errors."""
 
@@ -275,7 +287,7 @@ class Shortcut:
         # answer for an entry that simply omitted the field; zero them so a
         # parsed entry never gains a value it did not have.
         for _key, attr, kind in FIELDS:
-            values.setdefault(attr, {} if kind == "map" else ("" if kind == "str" else 0))
+            values.setdefault(attr, _absent_default(kind))
         return cls(
             **values,
             extra=extra,
@@ -335,8 +347,11 @@ class Shortcut:
 
         Keys that were present when the entry was read come back first, in
         their original order and spelling; a field that was absent stays
-        absent. An entry built in memory (no :attr:`key_order`) is written in
-        the canonical spec-2.1 order instead.
+        absent *unless it has since been given a value* -- patching ``icon``
+        on an adopted entry that had no ``icon`` key (spec 3.6) has to add
+        the key, not drop the change. An entry built in memory (no
+        :attr:`key_order`) is written in the canonical spec-2.1 order
+        instead.
         """
         out: dict[str, Any] = {}
         seen_lower: set[str] = set()
@@ -353,6 +368,17 @@ class Shortcut:
             for key, attr, kind in FIELDS:
                 out[key] = self._value_for(attr, kind)
                 seen_lower.add(key.lower())
+        else:
+            # A known field the file did not carry is written only when it
+            # now differs from the value :meth:`from_mapping` gives an absent
+            # field, so an untouched entry still round-trips byte for byte.
+            for key, attr, kind in FIELDS:
+                if key.lower() in seen_lower:
+                    continue
+                value = self._value_for(attr, kind)
+                if value != _absent_default(kind):
+                    out[key] = value
+                    seen_lower.add(key.lower())
         for key, value in self.extra.items():
             if key.lower() not in seen_lower:
                 out[key] = value
@@ -540,7 +566,14 @@ class ShortcutsFile:
             self._rotate_backups(target, backups=backups, now=now)
 
         tmp = target.with_name(target.name + ".tmp")
-        tmp.write_bytes(payload)
+        with open(tmp, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            # Spec 3.6 only asks for temp file + os.replace; the fsync means a
+            # power cut during the one non-incremental step (3.9 item 4) can
+            # leave the old file or the new one, never a rename onto bytes
+            # that never reached the disk.
+            os.fsync(handle.fileno())
         os.replace(tmp, target)
         self.path = target
         self.original_bytes = payload

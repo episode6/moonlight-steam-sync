@@ -273,6 +273,35 @@ def test_find_grid_file_ignores_a_partial_download(tmp_path):
     assert find_grid_file(grid, 123, "logo") is None
 
 
+def test_find_grid_file_ignores_the_logo_position_sidecar(tmp_path):
+    """``<appid>.json`` is the logo *position* file, not landscape art (spec 2.1).
+
+    It shares the landscape slot's stem, so treating it as a filled slot
+    would make the skip-existing rule (spec 3.5 / 3.9 item 1) skip the
+    landscape art forever for anyone who nudged a logo in the Steam UI.
+    """
+    grid = tmp_path / "grid"
+    grid.mkdir()
+    (grid / "123.json").write_text('{"nVersion": 1}')
+    assert find_grid_file(grid, 123, "landscape") is None
+
+    (grid / "123.jpg").write_bytes(b"")
+    assert find_grid_file(grid, 123, "landscape") == grid / "123.jpg"
+
+
+def test_find_grid_file_accepts_every_extension_steam_honours(tmp_path):
+    """PNG/JPG everywhere, plus ``.ico`` for the icon slot (spec 2.1)."""
+    grid = tmp_path / "grid"
+    grid.mkdir()
+    (grid / "1p.jpeg").write_bytes(b"")
+    (grid / "2_icon.ico").write_bytes(b"")
+    (grid / "3_hero.PNG").write_bytes(b"")
+
+    assert find_grid_file(grid, 1, "portrait") == grid / "1p.jpeg"
+    assert find_grid_file(grid, 2, "icon") == grid / "2_icon.ico"
+    assert find_grid_file(grid, 3, "hero") == grid / "3_hero.PNG"
+
+
 # --- process control -------------------------------------------------------
 
 
@@ -325,6 +354,23 @@ def test_shutdown_gives_up_after_the_timeout():
     runner.run = run  # type: ignore[method-assign]
     assert shutdown(runner, timeout=3.0, poll_interval=0.5) is False
     assert runner.clock >= 3.0
+
+
+def test_a_hung_shutdown_command_still_polls_for_the_process():
+    """``steam -shutdown`` timing out does not mean the request was not delivered."""
+    runner = FakeRunner(running=True)
+    inner = runner.run
+
+    def run(cmd, *, timeout: float = 10.0):
+        if cmd[:2] == ["steam", "-shutdown"]:
+            runner.calls.append(list(cmd))
+            runner.shutdown_after_polls = runner._polls + 2
+            raise subprocess.TimeoutExpired(cmd, timeout)
+        return inner(cmd, timeout=timeout)
+
+    runner.run = run  # type: ignore[method-assign]
+    assert shutdown(runner, poll_interval=0.5) is True
+    assert ["steam", "-shutdown"] in runner.calls
 
 
 def test_relaunch_spawns_steam_detached():
