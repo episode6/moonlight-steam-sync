@@ -15,6 +15,7 @@ synthetic file for a real capture is a file drop plus (for the real
 | `shortcuts_synthetic.vdf` | Steam's binary shortcut store, 3 entries (spec 2.1) | `shortcuts_real.vdf` -- a sanitised `userdata/<steamid3>/config/shortcuts.vdf` from a device |
 | `build_synthetic_shortcuts.py` | the raw-bytes generator for the above | nothing; it stays, and `test_vdf.py` asserts the committed fixture still matches its output |
 | `loginusers_synthetic.vdf` | Steam's text-KeyValues `config/loginusers.vdf` (spec 3.4) | a sanitised real `loginusers.vdf` |
+| `moonlight_list_sample.csv` | `moonlight list --csv` output (spec 2.1/2.3) | real `moonlight list <host> --csv` output, host UUID scrubbed |
 
 ## TODO: `shortcuts_real.vdf`
 
@@ -43,8 +44,38 @@ consistent with the `userdata/` directory names) and replacing
 `AccountName`/`PersonaName`. Drop it in as `loginusers_real.vdf`; the
 tokenizer test picks it up automatically.
 
+## `moonlight_list_sample.csv`
+
+**SYNTHETIC -- TODO: replace with real data.** Hand-built to match the exact
+byte shape moonlight-qt's `--csv` flag emits, per its source
+(`app/cli/listapps.cpp`'s `printAppCSV`/`printAppsCSV` and
+`app/backend/boxartmanager.cpp`), not just the field names:
+
+- Header is `Name, ID, HDR Support, App Collection Game, Hidden, Direct
+  Launch, Boxart URL` with a literal `", "` (comma-space) separator, so
+  every field but `Name` carries a leading space in the raw text --
+  `moonlight.py` parses with `skipinitialspace=True` and validates the
+  header once, rather than indexing columns positionally.
+- Booleans are lowercase `true`/`false` (confirmed against the source, not
+  guessed).
+- `Boxart URL` is `QUrl::fromLocalFile(...).toDisplayString()`, which
+  percent-encodes the path -- the real cache path always contains spaces
+  (`.../cache/Moonlight Game Streaming Project/Moonlight/boxart/<uuid>/<id>.png`),
+  so the fixture's `file://` rows use `%20` and `moonlight.py`'s
+  `_parse_boxart` percent-decodes rather than just stripping the scheme.
+
+One `file://` boxart path and one `qrc:/res/no_app_image.png` (not cached)
+row, one `Hidden=true` row and one `App Collection Game=true` row exercise
+the filtering in `moonlight.list_apps()`.
+
+TODO: replace this file with real `moonlight list --host <host> --csv`
+output captured from each of the user's Moonlight hosts (once available),
+with the host UUID in the `Boxart URL` column's cache path scrubbed to
+something like `<host-uuid>`. Capturing it is a one-line run: `moonlight
+list <host> --csv > moonlight_list_<host>.csv`, then hand-edit out any
+real host name, UUID, or absolute home directory before committing.
+
 ## Fixtures owned by other PRs
 
-`moonlight list --csv` output (PR-3) and the SteamGridDB / Steam-store JSON
-bodies (PR-4) land alongside these with the same rules. They are listed in
-`AGENTS.md` rather than here until they exist.
+The SteamGridDB / Steam-store JSON bodies (PR-4) land alongside these with the
+same rules. They are listed in `AGENTS.md` rather than here until they exist.

@@ -1,0 +1,7 @@
+Name, ID, HDR Support, App Collection Game, Hidden, Direct Launch, Boxart URL
+"Elden Ring",1,false,false,false,true,"file:///home/deck/.var/app/com.moonlight_stream.Moonlight/cache/Moonlight%20Game%20Streaming%20Project/Moonlight/boxart/abc-host-uuid/1.png"
+"Desktop",2,false,false,false,false,"qrc:/res/no_app_image.png"
+"Steam Big Picture",3,false,false,false,true,"qrc:/res/no_app_image.png"
+"Hidden Game",4,false,false,true,true,"qrc:/res/no_app_image.png"
+"My Collection",5,false,true,false,true,"qrc:/res/no_app_image.png"
+"Some Weird Launcher Name",6,true,false,false,true,"file:///home/deck/.var/app/com.moonlight_stream.Moonlight/cache/Moonlight%20Game%20Streaming%20Project/Moonlight/boxart/abc-host-uuid/6.png"

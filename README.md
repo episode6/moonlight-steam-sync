@@ -12,10 +12,11 @@ about it is SteamOS-specific beyond assuming a Linux Steam install and a
 `moonlight` client (native binary or the Flathub flatpak) on `PATH`.
 
 **Status:** early scaffold. `doctor` works -- it now also reports which Steam
-account `sync` would write to -- and the Steam side underneath (binary VDF
-codec, the `shortcuts.vdf` reader/writer, Steam discovery and restart) is in
-place. Every other subcommand below is still a stub that prints "not
-implemented" and exits 1 until its PR lands. See the work plan in
+account `sync` would write to -- and so does `launch`, backed by the Moonlight
+side (binary discovery, game list, streaming). The Steam side underneath
+(binary VDF codec, the `shortcuts.vdf` reader/writer, Steam discovery and
+restart) is in place too. Every other subcommand below is still a stub that
+prints "not implemented" and exits 1 until its PR lands. See the work plan in
 [`AGENTS.md`](AGENTS.md) for what's coming and in what order.
 
 ## Install
@@ -67,6 +68,12 @@ environment variable, then the contents of
 Run `moonlight-steam-sync doctor` to see what the tool detects on your
 machine (Steam install, Python version, `moonlight` binary, whether an API
 key is configured, whether Steam is currently running).
+
+The `moonlight` CLI is found in this order: the `MOONLIGHT_BIN` environment
+variable (a full command line, e.g. `flatpak run --command=moonlight
+com.moonlight_stream.Moonlight`), then a native `moonlight` on `PATH`, then
+the [Flathub flatpak](https://flathub.org/apps/com.moonlight_stream.Moonlight)
+if it is installed.
 
 **Steam must restart** to notice new shortcuts and new artwork files. `sync`
 does this once per run (`steam -shutdown`, write, relaunch) rather than per
