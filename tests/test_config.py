@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from moonlight_steam_sync.__main__ import build_parser
 from moonlight_steam_sync.config import (
     default_exe,
     default_launch_options,
@@ -184,3 +185,32 @@ def test_flag_can_override_start_dir_explicitly(tmp_path: Path):
     args = ns(exe="/opt/moonlight/stream.sh", start_dir="/custom/dir")
     cfg = load_config(args, config_path=missing, env={}, key_file=tmp_path / "kf")
     assert cfg.start_dir == "/custom/dir"
+
+
+def test_no_restart_steam_flag_overrides_file_true(tmp_path: Path):
+    """`sync --no-restart-steam` parses to `args.no_restart_steam = True`
+    (there is no `--restart-steam` counterpart), so load_config must map it
+    onto `restart_steam = False` even when the config file says true (spec
+    3.2's "flags win over file", spec 3.3's `--no-restart-steam`, spec 3.6's
+    exit-2 path). Drives the real argparse parser, not a synthetic
+    Namespace, so a dest/attribute mismatch in the parser would be caught
+    here too.
+    """
+    config_path = tmp_path / "config.toml"
+    config_path.write_text("restart_steam = true\n")
+
+    args = build_parser().parse_args(["sync", "--no-restart-steam"])
+    cfg = load_config(args, config_path=config_path, env={}, key_file=tmp_path / "kf")
+
+    assert cfg.restart_steam is False
+
+
+def test_no_restart_steam_flag_absent_keeps_file_value(tmp_path: Path):
+    """Without the flag, the file's `restart_steam` still applies."""
+    config_path = tmp_path / "config.toml"
+    config_path.write_text("restart_steam = true\n")
+
+    args = build_parser().parse_args(["sync"])
+    cfg = load_config(args, config_path=config_path, env={}, key_file=tmp_path / "kf")
+
+    assert cfg.restart_steam is True

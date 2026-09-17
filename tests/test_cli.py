@@ -12,15 +12,27 @@ import sys
 
 import pytest
 
+from moonlight_steam_sync import __main__ as main_module
+from moonlight_steam_sync import config as config_module
 from moonlight_steam_sync.__main__ import build_parser, main
 
-NOT_YET_IMPLEMENTED = ["sync", "art", "list", "status", "launch"]
+NOT_YET_IMPLEMENTED = ["sync", "art", "list", "status", "launch", "ignore", "remove"]
+
+# `ignore` and `remove` require their mutually-exclusive `--all | names` group
+# to be satisfied to even parse; every other stub takes no required args.
+_ARGV_FOR_COMMAND = {
+    "launch": ["launch", "X"],
+    "ignore": ["ignore", "--all"],
+    "remove": ["remove", "--all"],
+}
 
 
 def test_build_parser_accepts_every_documented_subcommand():
     parser = build_parser()
     parser.parse_args(["sync"])
-    parser.parse_args(["sync", "--host", "H", "--dry-run", "--no-art", "--limit", "5"])
+    parser.parse_args(
+        ["sync", "--host", "H", "--dry-run", "--no-art", "--limit", "5", "--no-restart-steam"]
+    )
     parser.parse_args(["art", "--force", "--only", "Some Game", "--explain"])
     parser.parse_args(["list", "--host", "H"])
     parser.parse_args(["status"])
@@ -35,13 +47,24 @@ def test_build_parser_accepts_every_documented_subcommand():
 
 @pytest.mark.parametrize("command", NOT_YET_IMPLEMENTED)
 def test_stub_commands_exit_1(command, capsys):
-    exit_code = main([command] if command != "launch" else ["launch", "X"])
+    exit_code = main(_ARGV_FOR_COMMAND.get(command, [command]))
     assert exit_code == 1
     captured = capsys.readouterr()
     assert "not implemented" in captured.err
 
 
-def test_doctor_runs_and_exits_0(capsys):
+def test_doctor_runs_and_exits_0(capsys, tmp_path, monkeypatch):
+    """Isolated from the developer's real environment: doctor must not read
+    the real ~/.config/moonlight-steam-sync/config.toml, the real key file,
+    or a real SGDB_API_KEY, all of which would make this test's outcome
+    depend on whoever's machine runs it.
+    """
+    key_file = tmp_path / "sgdb-api-key"
+    monkeypatch.setattr(config_module, "DEFAULT_CONFIG_PATH", tmp_path / "config.toml")
+    monkeypatch.setattr(config_module, "DEFAULT_KEY_FILE", key_file)
+    monkeypatch.setattr(main_module, "DEFAULT_KEY_FILE", key_file)
+    monkeypatch.delenv("SGDB_API_KEY", raising=False)
+
     exit_code = main(["doctor"])
     assert exit_code == 0
     out = capsys.readouterr().out
@@ -50,6 +73,7 @@ def test_doctor_runs_and_exits_0(capsys):
     assert "moonlight:" in out
     assert "sgdb api key:" in out
     assert "steam running:" in out
+    assert "sgdb api key:  not set" in out
 
 
 def test_no_subcommand_is_a_usage_error():

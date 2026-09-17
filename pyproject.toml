@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "moonlight-steam-sync"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Sync a Moonlight host's game list into Steam as non-Steam shortcuts, with SteamGridDB/Steam-CDN artwork."
 readme = "README.md"
 license = { text = "MIT" }
@@ -19,3 +19,6 @@ dev = ["pytest", "ruff", "vdf"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.dynamic]
+version = { attr = "moonlight_steam_sync.__version__" }

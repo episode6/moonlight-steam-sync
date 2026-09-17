@@ -161,6 +161,13 @@ def load_config(
         else sgdb_section.get("community_fallback", True)
     )
 
+    # `sync --no-restart-steam` parses to `args.no_restart_steam = True`
+    # (there is no `--restart-steam` flag to negate), so it cannot be read
+    # back through pick("restart_steam", ...), which looks for an attribute
+    # named `restart_steam` that argparse never sets. Treat the negated flag
+    # as an explicit False override before falling back to the file/default.
+    restart_steam = False if flag("no_restart_steam") is True else pick("restart_steam", True)
+
     cfg = Config(
         host=pick("host", ""),
         name_suffix=pick("name_suffix", ""),
@@ -168,7 +175,7 @@ def load_config(
         launch_options=launch_options,
         start_dir=start_dir,
         ignore=pick("ignore", []),
-        restart_steam=pick("restart_steam", True),
+        restart_steam=restart_steam,
         request_interval_ms=pick("request_interval_ms", 250),
         sgdb_api_key=api_key,
         sgdb_community_fallback=community_fallback,

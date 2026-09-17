@@ -145,7 +145,11 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 
     steam_root = _steam_root()
     lines.append(f"steam dir:     {steam_root if steam_root else 'not found'}")
-    lines.append(f"steam user:    {Path.home()}")
+    # This is the OS home directory, not the steamid3/userdata identity that
+    # steam.py's userdata discovery (spec 3.4, PR-2) will resolve, so it is
+    # labelled for what it actually is rather than implied to be the Steam
+    # account.
+    lines.append(f"home dir:      {Path.home()}")
     lines.append(f"steam running: {'yes' if _steam_running() else 'no'}")
 
     moonlight_path = _find_moonlight()
