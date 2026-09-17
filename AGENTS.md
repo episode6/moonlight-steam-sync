@@ -69,14 +69,16 @@ one place for the shared urllib/pacing/backoff plumbing so `sgdb.py` and
 `__main__.py` and `config.py` landed in PR-1; `vdf.py`, `shortcuts.py` and
 `steam.py` (the whole Steam side) in PR-2; `moonlight.py` (binary discovery,
 `list_apps()`, `stream()`, wired into the `launch` subcommand) in PR-3; `art/`
-(the artwork engine plus the `art` and `status` subcommands) in PR-4; and
+(the artwork engine plus the `art` and `status` subcommands) in PR-4;
 `sync.py` (the `sync`, `list`, `ignore` and `remove` subcommands, the one
-shutdown -> write -> relaunch path, and the resumability e2e tests) in PR-5.
-Every subcommand in spec 3.3 is now real. What remains is PR-6 (the release
-zipapp and `install.sh`), the device checklist, and PR-7 in `server-scripts`.
-Do not add code to a module ahead of its PR without checking the work plan
-first -- the modules are split the way they are so independent PRs can land
-in parallel.
+shutdown -> write -> relaunch path, and the resumability e2e tests) in PR-5;
+and the release pipeline (`release.yml`, `install.sh`, `--version` from
+package metadata, `CHANGELOG.md`) in PR-6. Every subcommand in spec 3.3 is
+now real and the tool is installable from a release. What remains is the
+device checklist (spec section 8, a human gate) and then PR-7 in
+`server-scripts`. Do not add code to a module ahead of its PR without
+checking the work plan first -- the modules are split the way they are so
+independent PRs can land in parallel.
 
 ### Working on the orchestration (`sync.py`)
 
@@ -334,6 +336,60 @@ Steam's process, `make_steam_root()` + `$STEAM_ROOT` for the Steam tree,
 (`FakeTransport` over the recorded manifest, `BulkTransport` by pattern).
 New end-to-end tests should build on those rather than monkeypatching
 `subprocess` or `urllib` directly.
+
+## Cutting a release
+
+The release artifact (spec 3.1) is a single executable zipapp,
+`moonlight-steam-sync.pyz`, built by `.github/workflows/release.yml` and
+attached to a GitHub release whenever a `v*` tag is pushed. That workflow
+also has a `pull_request` and `workflow_dispatch` trigger on its build+smoke
+job -- the part that builds the zipapp and smoke-runs `--version` and
+`doctor` against it on Python 3.11/3.12/3.13 -- specifically so it is
+exercised by ordinary CI and does not sit untested until the first tag. Only
+the final "create the release and attach the asset" job is tag-only.
+
+Bumping the version and cutting a release is a small number of steps, done
+from a clean checkout of `main` after everything intended for the release
+has merged:
+
+```sh
+git checkout main && git pull
+
+# 1. Bump the single source of truth for the version.
+#    pyproject.toml's `version` is `dynamic` and reads this attribute
+#    (`[tool.setuptools.dynamic]`), so this is the only file to edit.
+$EDITOR src/moonlight_steam_sync/__init__.py   # __version__ = "X.Y.Z"
+
+# 2. Move the CHANGELOG's prepared entry out of "not yet released" and
+#    open a new empty "Unreleased" section above it.
+$EDITOR CHANGELOG.md
+
+# 3. Commit the bump.
+git add src/moonlight_steam_sync/__init__.py CHANGELOG.md
+git commit -m "Release vX.Y.Z"
+
+# 4. Tag and push. The tag push is what triggers release.yml's
+#    github-release job.
+git tag -a vX.Y.Z -m "vX.Y.Z"
+git push origin main
+git push origin vX.Y.Z
+```
+
+After the push, watch the `Release` workflow run to completion
+(`gh run watch` or the Actions tab) and confirm the release page has
+`moonlight-steam-sync.pyz` and `moonlight-steam-sync.pyz.sha256` attached,
+then sanity-check the install path end to end:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/episode6/moonlight-steam-sync/main/install.sh | sh
+moonlight-steam-sync --version
+```
+
+**`v0.1.0` is deliberately not cut yet.** It sits immediately on the other
+side of the human device checklist below -- a release is an irreversible
+public publish, and the repo owner holds it back until the checklist has
+passed on real hardware. PR-6 lands everything this section describes
+without running these steps.
 
 ## Device checklist
 

@@ -1,0 +1,97 @@
+name: Release
+
+# Builds the release artifact -- a single executable zipapp,
+# moonlight-steam-sync.pyz (python -m zipapp, shebang /usr/bin/env python3,
+# deflate-compressed) -- and smoke-runs `--version` and `doctor` against it
+# on the SteamOS Python spread (3.11 through the 3.13.5 shipped on SteamOS
+# 3.8.16). That build+smoke job also runs on pull_request and
+# workflow_dispatch, not just on a v* tag: this workflow cannot be proven by
+# tagging inside a PR, so instead every PR that touches it (including the
+# one that introduced it) actually builds the zipapp and runs it, twice,
+# on all three Pythons. Only the final "create the release and attach the
+# asset" step is tag-only -- see AGENTS.md "Cutting a release" for the
+# command sequence that pushes a v* tag.
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Build the zipapp
+        run: |
+          mkdir -p dist
+          python -m zipapp src \
+            -m "moonlight_steam_sync.__main__:main" \
+            -o dist/moonlight-steam-sync.pyz \
+            -p "/usr/bin/env python3" \
+            -c
+
+      - name: Smoke test -- --version
+        run: python3 dist/moonlight-steam-sync.pyz --version
+
+      - name: Smoke test -- doctor
+        # `doctor` always exits 0 (it reports what it finds, it does not
+        # require a Steam install or a moonlight binary to run in CI).
+        run: python3 dist/moonlight-steam-sync.pyz doctor
+
+      - name: Checksum
+        # Record the checksum against the bare filename, not the build path
+        # (dist/moonlight-steam-sync.pyz), so `sha256sum -c` against the two
+        # downloaded release assets -- both in the same directory, with no
+        # `dist/` prefix -- verifies cleanly instead of failing on the
+        # recorded name not matching the download layout.
+        run: |
+          cd dist
+          sha256sum moonlight-steam-sync.pyz | tee moonlight-steam-sync.pyz.sha256
+
+      # Only one Python's build becomes the published asset; 3.11 is the
+      # floor this tool targets (spec 6.1) and the zipapp is otherwise
+      # identical across matrix legs (the shebang picks whatever python3 is
+      # on the target machine's PATH at run time).
+      - uses: actions/upload-artifact@v4
+        if: matrix.python-version == '3.11'
+        with:
+          name: pyz
+          path: |
+            dist/moonlight-steam-sync.pyz
+            dist/moonlight-steam-sync.pyz.sha256
+          if-no-files-found: error
+
+  github-release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: pyz
+          path: dist
+
+      - name: Create the release and attach the zipapp
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            dist/moonlight-steam-sync.pyz dist/moonlight-steam-sync.pyz.sha256 \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes
