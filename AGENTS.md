@@ -74,9 +74,10 @@ one place for the shared urllib/pacing/backoff plumbing so `sgdb.py` and
 shutdown -> write -> relaunch path, and the resumability e2e tests) in PR-5;
 and the release pipeline (`release.yml`, `install.sh`, `--version` from
 package metadata, `CHANGELOG.md`) in PR-6. Every subcommand in spec 3.3 is
-now real and the tool is installable from a release. What remains is the
-device checklist (spec section 8, a human gate) and then PR-7 in
-`server-scripts`. Do not add code to a module ahead of its PR without
+now real, `v0.1.0` is released, and PR-7 (the `server-scripts` switch-over)
+has landed too. What remains is the device checklist (spec section 8, a
+human gate; the installer and Python-version findings from its first run
+are already folded in). Do not add code to a module ahead of its PR without
 checking the work plan first -- the modules are split the way they are so
 independent PRs can land in parallel.
 
@@ -258,10 +259,13 @@ ruff check .
 pytest
 ```
 
-CI (`.github/workflows/ci.yml`) runs `ruff check .` once and `pytest` across
-Python 3.11/3.12/3.13 on ubuntu-latest -- that matrix is the SteamOS Python
-spread (3.11 through the 3.13.5 shipped on SteamOS 3.8.16), not an arbitrary
-choice.
+CI (`.github/workflows/ci.yml`) runs `ruff check .` once and `pytest` on
+Python 3.11 and 3.13.5 on ubuntu-latest. That matrix is not arbitrary: 3.11
+is the floor `pyproject.toml` declares (the `tomllib` line), and 3.13.5 is
+the exact Python a stock SteamOS install ships (verified on a fresh install
+on 2026-09-17), i.e. the one the tool actually has to run on. When SteamOS
+moves to a new Python, change the pinned version in both `ci.yml` and
+`release.yml` rather than adding legs.
 
 ## Fixtures and TODOs
 
@@ -344,7 +348,7 @@ The release artifact (spec 3.1) is a single executable zipapp,
 attached to a GitHub release whenever a `v*` tag is pushed. That workflow
 also has a `pull_request` and `workflow_dispatch` trigger on its build+smoke
 job -- the part that builds the zipapp and smoke-runs `--version` and
-`doctor` against it on Python 3.11/3.12/3.13 -- specifically so it is
+`doctor` against it on Python 3.11 and 3.13.5 -- specifically so it is
 exercised by ordinary CI and does not sit untested until the first tag. Only
 the final "create the release and attach the asset" job is tag-only.
 
@@ -400,7 +404,8 @@ SteamOS box becomes one `curl` instead of a git checkout and a
 
 Before anything in this tool is trusted against a real Steam install, run
 through the device checklist in spec section 8
-(`~/specs/moonlight-steam-sync/initial-build.md`). That happens after PR-6
-lands and is a human gate before PR-7 (the `server-scripts` migration) --
-agents implementing PR-1 through PR-6 do not need device access, only the
+(`~/specs/moonlight-steam-sync/initial-build.md`). It was meant as a human
+gate before PR-7 (the `server-scripts` migration); in practice the release
+and PR-7 went first so the checklist could run against an installed tool --
+agents implementing PR-1 through PR-6 did not need device access, only the
 synthetic fixtures above.

@@ -30,7 +30,10 @@ curl -fsSL https://raw.githubusercontent.com/episode6/moonlight-steam-sync/main/
 This downloads the latest release's `moonlight-steam-sync.pyz` -- a single
 executable zipapp with no dependencies to install -- verifies its published
 sha256 checksum, and installs it as `~/.local/bin/moonlight-steam-sync`
-(printing a `PATH` hint if that directory is not already on it). Re-run the
+(a fresh SteamOS install does not have that directory on `PATH`, so the
+installer also appends an `export PATH=...` line to `~/.bashrc` -- or
+`~/.zshrc` under zsh -- when it is missing; set `NO_MODIFY_PATH=1` to have
+it only print the line instead). Re-run the
 same command any time to upgrade to the latest release -- it always
 re-downloads and reinstalls, so it is safe to run repeatedly (there is no
 version check yet, so it is not a no-op when already current; the
@@ -55,7 +58,8 @@ runnable without installing anything. `pip install -e ".[dev]"` -- see
 
 Either way, requires Python 3.11+ (for `tomllib`) and nothing else: the tool
 has zero runtime dependencies. Stock SteamOS 3.x ships a Python new enough
-for this already.
+for this already (3.13.5 at the time of writing, which is the version CI
+tests against alongside the 3.11 floor).
 
 ## Configure
 
@@ -280,7 +284,7 @@ resumability contract every durable step in this codebase has to keep.
 
 `.github/workflows/release.yml` builds the release zipapp with
 `python -m zipapp` and smoke-runs `--version` and `doctor` against it on
-Python 3.11/3.12/3.13 -- on every pull request as well as on a `v*` tag, so
+Python 3.11 and 3.13.5 -- on every pull request as well as on a `v*` tag, so
 the release pipeline itself is exercised by ordinary CI rather than only
 proven the day a tag is pushed. Only attaching the built zipapp to a GitHub
 release is tag-only. See [`CHANGELOG.md`](CHANGELOG.md) for what has
