@@ -15,7 +15,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from moonlight_steam_sync import __version__
+from moonlight_steam_sync import __version__, steam
 from moonlight_steam_sync.config import DEFAULT_KEY_FILE, load_config
 
 NOT_IMPLEMENTED = "not implemented"
@@ -108,28 +108,27 @@ def _find_moonlight() -> str | None:
 
 
 def _steam_running() -> bool:
-    try:
-        result = subprocess.run(
-            ["pgrep", "-x", "steam"], capture_output=True, timeout=5, check=False
-        )
-        return result.returncode == 0
-    except (OSError, FileNotFoundError):
-        pass
-    # Fall back to scanning /proc/*/comm (spec 3.6), for systems without pgrep.
-    for comm_path in Path("/proc").glob("[0-9]*/comm"):
-        try:
-            if comm_path.read_text().strip() == "steam":
-                return True
-        except OSError:
-            continue
-    return False
+    return steam.is_running()
 
 
 def _steam_root() -> Path | None:
-    for candidate in (Path.home() / ".steam" / "steam", Path.home() / ".local" / "share" / "Steam"):
-        if candidate.is_dir():
-            return candidate
-    return None
+    try:
+        return steam.find_steam_root()
+    except steam.SteamNotFoundError:
+        return None
+
+
+def _steam_user_line(root: Path | None) -> str:
+    """One line describing which Steam account `sync` would write to."""
+    if root is None:
+        return "steam user:    unknown (no Steam directory)"
+    try:
+        user = steam.pick_user(root)
+    except steam.SteamError as exc:
+        return f"steam user:    undecided ({exc})"
+    label = user.account_name or user.persona_name
+    who = f"{user.steamid3}{f' ({label})' if label else ''}"
+    return f"steam user:    {who} -> {user.shortcuts_path}"
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
@@ -145,11 +144,10 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 
     steam_root = _steam_root()
     lines.append(f"steam dir:     {steam_root if steam_root else 'not found'}")
-    # This is the OS home directory, not the steamid3/userdata identity that
-    # steam.py's userdata discovery (spec 3.4, PR-2) will resolve, so it is
-    # labelled for what it actually is rather than implied to be the Steam
-    # account.
+    # The OS home directory, distinct from the steamid3/userdata identity on
+    # the next line, which is the Steam account `sync` would write to.
     lines.append(f"home dir:      {Path.home()}")
+    lines.append(_steam_user_line(steam_root))
     lines.append(f"steam running: {'yes' if _steam_running() else 'no'}")
 
     moonlight_path = _find_moonlight()
