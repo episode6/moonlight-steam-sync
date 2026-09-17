@@ -281,3 +281,5 @@ to cut one.
 ## License
 
 MIT, see [`LICENSE`](LICENSE).
+
+Issues and pull requests are welcome.
