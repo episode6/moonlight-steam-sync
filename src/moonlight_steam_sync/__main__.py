@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import platform
 import sys
+from importlib import metadata
 from pathlib import Path
 
 from moonlight_steam_sync import __version__, moonlight, steam, sync
@@ -33,6 +34,26 @@ EXIT_NETWORK_STOPPED = 4
 EXIT_SIGINT = 130
 
 
+def _version() -> str:
+    """The version string ``--version`` prints.
+
+    ``pyproject.toml`` declares ``version`` as ``dynamic`` and sourced from
+    ``moonlight_steam_sync.__version__`` (see ``[tool.setuptools.dynamic]``),
+    so that attribute is the one place the number is written down. When the
+    tool is installed as a package (``pip install .``, an editable checkout,
+    or a wheel), ``importlib.metadata`` reads the *installed* metadata --
+    the same value, but resolved the way any other installed distribution's
+    version is, so ``--version`` matches ``pip show``. The release zipapp
+    (spec 3.1) is never pip-installed -- it is a bare ``.pyz`` with no
+    ``dist-info`` alongside it -- so metadata lookup fails there and this
+    falls back to the literal ``__version__`` the module was built with.
+    """
+    try:
+        return metadata.version("moonlight-steam-sync")
+    except metadata.PackageNotFoundError:
+        return __version__
+
+
 def _add_common_host_flag(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--host", help="Moonlight host name (overrides config)")
 
@@ -42,7 +63,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="moonlight-steam-sync",
         description="Sync a Moonlight host's game list into Steam shortcuts, with artwork.",
     )
-    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
+    parser.add_argument("--version", action="version", version=f"%(prog)s {_version()}")
     sub = parser.add_subparsers(dest="command", required=True)
 
     sync_p = sub.add_parser("sync", help="add missing shortcuts and their artwork")
