@@ -1,0 +1,41 @@
+// SYNTHETIC FIXTURE -- not a real Steam file.
+//
+// TODO (synthetic fixture): replace with a real, sanitised
+// `<steam root>/config/loginusers.vdf` from a device.
+//   HOW TO CAPTURE: `moonlight-steam-sync doctor` prints the Steam
+//   directory; the file sits at `<that dir>/config/loginusers.vdf`. Before
+//   committing it, replace every steam64 id with an invented one that still
+//   satisfies `steamid3 = steam64 - 76561197960265728` and matches a
+//   `userdata/<steamid3>` directory name, and replace `AccountName` /
+//   `PersonaName` with placeholders. Nothing else in the file is personal.
+//   The parser test reads whatever is here, so this is a file drop.
+//   WHY IT MATTERS: the shape below (tab-separated quoted pairs, a `users`
+//   block keyed by steam64, `MostRecent "1"` on exactly one account) is
+//   taken from spec 3.4, not from an observed file; a real capture is what
+//   proves the tokenizer copes with Steam's actual spacing, escaping and
+//   any keys that have appeared since.
+"users"
+{
+	"76561197960400000"
+	{
+		"AccountName"		"olduser"
+		"PersonaName"		"Old User"
+		"RememberPassword"		"1"
+		"WantsOfflineMode"		"0"
+		"SkipOfflineModeWarning"		"0"
+		"AllowAutoLogin"		"1"
+		"MostRecent"		"0"
+		"Timestamp"		"1700000000"
+	}
+	"76561197960500000"
+	{
+		"AccountName"		"deck"
+		"PersonaName"		"Deck \"Main\" Account"
+		"RememberPassword"		"1"
+		"WantsOfflineMode"		"0"
+		"SkipOfflineModeWarning"		"0"
+		"AllowAutoLogin"		"1"
+		"MostRecent"		"1"
+		"Timestamp"		"1757980800"
+	}
+}
