@@ -11,25 +11,42 @@ host such as [Sunshine](https://github.com/LizardByte/Sunshine), but nothing
 about it is SteamOS-specific beyond assuming a Linux Steam install and a
 `moonlight` client (native binary or the Flathub flatpak) on `PATH`.
 
-**Status:** feature complete for a git checkout; every subcommand below
-works (`sync`, `list`, `ignore`, `remove`, `art`, `status`, `launch`,
-`doctor`). Not yet verified against a real Steam Deck -- the device checklist
-in the design spec is the gate before the first release -- and the release
-zipapp plus `install.sh` land in the next PR. See [`AGENTS.md`](AGENTS.md)
-for the work plan.
+**Status:** feature complete; every subcommand below works (`sync`, `list`,
+`ignore`, `remove`, `art`, `status`, `launch`, `doctor`), and the release
+pipeline (a `.pyz` zipapp plus `install.sh`) is in place. **Not yet
+verified against a real Steam Deck** -- the device checklist in the design
+spec (section 8) is the gate before the first tagged release, `v0.1.0`,
+which has not been cut yet. See [`AGENTS.md`](AGENTS.md) for the work plan
+and the exact release procedure.
 
 ## Install
+
+Once `v0.1.0` (or later) has been released:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/episode6/moonlight-steam-sync/main/install.sh | sh
 ```
 
-*(placeholder -- `install.sh` and the release zipapp it downloads land in a
-later PR; for now, run from a git checkout with `python3 -m moonlight_steam_sync`.)*
+This downloads the latest release's `moonlight-steam-sync.pyz` -- a single
+executable zipapp with no dependencies to install -- verifies its published
+sha256 checksum, and installs it as `~/.local/bin/moonlight-steam-sync`
+(printing a `PATH` hint if that directory is not already on it). Re-run the
+same command any time to upgrade to the latest release; it is a no-op when
+already current. Set `MOONLIGHT_STEAM_SYNC_VERSION=vX.Y.Z` to pin a specific
+release instead of tracking latest, or `INSTALL_DIR=/some/other/dir` to
+install somewhere other than `~/.local/bin`.
 
-Requires Python 3.11+ (for `tomllib`) and nothing else: the tool has zero
-runtime dependencies. Stock SteamOS 3.x ships a Python new enough for this
-already.
+**Until the first release is cut**, run from a git checkout instead:
+
+```sh
+git clone https://github.com/episode6/moonlight-steam-sync.git
+cd moonlight-steam-sync
+python3 -m moonlight_steam_sync --version
+```
+
+Either way, requires Python 3.11+ (for `tomllib`) and nothing else: the tool
+has zero runtime dependencies. Stock SteamOS 3.x ships a Python new enough
+for this already.
 
 ## Configure
 
@@ -242,6 +259,15 @@ work.
 
 See [`AGENTS.md`](AGENTS.md) for the module map, coding rules, and the
 resumability contract every durable step in this codebase has to keep.
+
+`.github/workflows/release.yml` builds the release zipapp with
+`python -m zipapp` and smoke-runs `--version` and `doctor` against it on
+Python 3.11/3.12/3.13 -- on every pull request as well as on a `v*` tag, so
+the release pipeline itself is exercised by ordinary CI rather than only
+proven the day a tag is pushed. Only attaching the built zipapp to a GitHub
+release is tag-only. See [`CHANGELOG.md`](CHANGELOG.md) for what has
+changed and [`AGENTS.md`](AGENTS.md#cutting-a-release) for the exact steps
+to cut one.
 
 ## License
 
