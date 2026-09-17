@@ -1,8 +1,9 @@
 """Tests for the argparse skeleton in __main__.py.
 
-Every subcommand from spec 3.3 must parse. `doctor` (PR-1), `launch` (PR-3),
-`art` and `status` are implemented; the rest still exit 1 with a "not
-implemented" message until the PR that implements their module lands.
+Every subcommand from spec 3.3 must parse, and every one is dispatched to a
+real implementation. The orchestration commands (`sync`, `list`, `ignore`,
+`remove`) are exercised end to end in ``tests/test_sync_e2e.py``; here they
+only need to prove they are wired and fail cleanly without a Steam install.
 """
 
 from __future__ import annotations
@@ -18,10 +19,8 @@ from moonlight_steam_sync import config as config_module
 from moonlight_steam_sync import moonlight
 from moonlight_steam_sync.__main__ import build_parser, main
 
-NOT_YET_IMPLEMENTED = ["sync", "list", "ignore", "remove"]
-
 # `ignore` and `remove` require their mutually-exclusive `--all | names` group
-# to be satisfied to even parse; every other stub takes no required args.
+# to be satisfied to even parse; every other command takes no required args.
 _ARGV_FOR_COMMAND = {
     "ignore": ["ignore", "--all"],
     "remove": ["remove", "--all"],
@@ -46,12 +45,32 @@ def test_build_parser_accepts_every_documented_subcommand():
     parser.parse_args(["doctor"])
 
 
-@pytest.mark.parametrize("command", NOT_YET_IMPLEMENTED)
-def test_stub_commands_exit_1(command, capsys):
-    exit_code = main(_ARGV_FOR_COMMAND.get(command, [command]))
-    assert exit_code == 1
-    captured = capsys.readouterr()
-    assert "not implemented" in captured.err
+@pytest.fixture
+def isolated_home(tmp_path, monkeypatch):
+    """No real config, key, cache or Steam install can leak into these tests."""
+    monkeypatch.setattr(config_module, "DEFAULT_CONFIG_PATH", tmp_path / "config.toml")
+    monkeypatch.setattr(config_module, "DEFAULT_KEY_FILE", tmp_path / "sgdb-api-key")
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    monkeypatch.delenv("SGDB_API_KEY", raising=False)
+    monkeypatch.delenv("STEAM_ROOT", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path / "nowhere"))
+    return tmp_path
+
+
+@pytest.mark.parametrize("command", ["sync", "list", "ignore", "remove"])
+def test_orchestration_commands_need_a_steam_install(command, capsys, isolated_home):
+    """`sync`, `list`, `ignore --all` and `remove` all read shortcuts.vdf first
+    (the library is the source of truth, spec 3.7) and exit 1 without one."""
+    (isolated_home / "config.toml").write_text('host = "MY-GAMING-PC"\n')
+    assert main(_ARGV_FOR_COMMAND.get(command, [command])) == 1
+    assert "no Steam installation" in capsys.readouterr().err
+
+
+def test_ignore_by_name_needs_neither_steam_nor_moonlight(capsys, isolated_home):
+    (isolated_home / "config.toml").write_text('ignore = ["Desktop"]\n')
+    assert main(["ignore", "Some Game"]) == 0
+    out = capsys.readouterr().out
+    assert out == 'ignore = [\n    "Desktop",\n    "Some Game",\n]\n'
 
 
 @pytest.mark.parametrize("command", ["art", "status"])
