@@ -31,18 +31,27 @@ This downloads the latest release's `moonlight-steam-sync.pyz` -- a single
 executable zipapp with no dependencies to install -- verifies its published
 sha256 checksum, and installs it as `~/.local/bin/moonlight-steam-sync`
 (printing a `PATH` hint if that directory is not already on it). Re-run the
-same command any time to upgrade to the latest release; it is a no-op when
-already current. Set `MOONLIGHT_STEAM_SYNC_VERSION=vX.Y.Z` to pin a specific
-release instead of tracking latest, or `INSTALL_DIR=/some/other/dir` to
-install somewhere other than `~/.local/bin`.
+same command any time to upgrade to the latest release -- it always
+re-downloads and reinstalls, so it is safe to run repeatedly (there is no
+version check yet, so it is not a no-op when already current; the
+`server-scripts` wrapper in a later PR adds one). Set
+`MOONLIGHT_STEAM_SYNC_VERSION=vX.Y.Z` to pin a specific release instead of
+tracking latest, or `INSTALL_DIR=/some/other/dir` to install somewhere
+other than `~/.local/bin`.
 
 **Until the first release is cut**, run from a git checkout instead:
 
 ```sh
 git clone https://github.com/episode6/moonlight-steam-sync.git
 cd moonlight-steam-sync
-python3 -m moonlight_steam_sync --version
+PYTHONPATH=src python3 -m moonlight_steam_sync --version
 ```
+
+(The package lives under `src/`, per `[tool.setuptools.packages.find]` in
+`pyproject.toml`, so `PYTHONPATH=src` is what makes a plain git checkout
+runnable without installing anything. `pip install -e ".[dev]"` -- see
+[`AGENTS.md`](AGENTS.md) -- also works and additionally puts the
+`moonlight-steam-sync` console script and the dev tools on `PATH`.)
 
 Either way, requires Python 3.11+ (for `tomllib`) and nothing else: the tool
 has zero runtime dependencies. Stock SteamOS 3.x ships a Python new enough
