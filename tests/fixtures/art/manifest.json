@@ -1,0 +1,231 @@
+{
+  "_TODO": "SYNTHETIC FIXTURE -- invented, not captured. Replace with a real capture: SGDB_API_KEY=... python3 scripts/record_fixtures.py",
+  "_generated_by": "tests/fixtures/art/make_synthetic.py",
+  "_note": "url -> {status, body (a path in this directory, or null), content_type, headers}. Any URL not listed answers 404, which is what the Steam CDN does for an asset a game does not have.",
+  "responses": {
+    "https://api.steampowered.com/ICommunityService/GetApps/v1/?appids%5B0%5D=1145350": {
+      "status": 200,
+      "body": "responses/steam-getapps-1145350.json",
+      "content_type": "application/json"
+    },
+    "https://api.steampowered.com/ICommunityService/GetApps/v1/?appids%5B0%5D=1245620": {
+      "status": 200,
+      "body": "responses/steam-getapps-1245620.json",
+      "content_type": "application/json"
+    },
+    "https://api.steampowered.com/ICommunityService/GetApps/v1/?appids%5B0%5D=400910": {
+      "status": 200,
+      "body": "responses/steam-getapps-400910.json",
+      "content_type": "application/json"
+    },
+    "https://cdn.cloudflare.steamstatic.com/steam/apps/1145350/header.jpg": {
+      "status": 200,
+      "body": "images/tiny.jpg",
+      "content_type": "image/jpeg"
+    },
+    "https://cdn.cloudflare.steamstatic.com/steam/apps/1145350/library_600x900.jpg": {
+      "status": 200,
+      "body": "images/tiny.jpg",
+      "content_type": "image/jpeg"
+    },
+    "https://cdn.cloudflare.steamstatic.com/steam/apps/1145350/library_hero.jpg": {
+      "status": 200,
+      "body": "images/tiny.jpg",
+      "content_type": "image/jpeg"
+    },
+    "https://cdn.cloudflare.steamstatic.com/steam/apps/1145350/logo.png": {
+      "status": 200,
+      "body": "images/tiny.png",
+      "content_type": "image/png"
+    },
+    "https://cdn.cloudflare.steamstatic.com/steam/apps/1245620/header.jpg": {
+      "status": 200,
+      "body": "images/tiny.jpg",
+      "content_type": "image/jpeg"
+    },
+    "https://cdn.cloudflare.steamstatic.com/steam/apps/1245620/library_600x900_2x.jpg": {
+      "status": 200,
+      "body": "images/tiny.jpg",
+      "content_type": "image/jpeg"
+    },
+    "https://cdn.cloudflare.steamstatic.com/steam/apps/1245620/library_hero.jpg": {
+      "status": 200,
+      "body": "images/tiny.jpg",
+      "content_type": "image/jpeg"
+    },
+    "https://cdn.cloudflare.steamstatic.com/steam/apps/1245620/logo.png": {
+      "status": 200,
+      "body": "images/tiny.png",
+      "content_type": "image/png"
+    },
+    "https://cdn.cloudflare.steamstatic.com/steam/apps/400910/header.jpg": {
+      "status": 200,
+      "body": "images/tiny.jpg",
+      "content_type": "image/jpeg"
+    },
+    "https://cdn.cloudflare.steamstatic.com/steam/apps/400910/library_600x900_2x.jpg": {
+      "status": 200,
+      "body": "images/tiny.jpg",
+      "content_type": "image/jpeg"
+    },
+    "https://cdn.cloudflare.steamstatic.com/steam/apps/400910/library_hero.jpg": {
+      "status": 200,
+      "body": "images/tiny.jpg",
+      "content_type": "image/jpeg"
+    },
+    "https://cdn.cloudflare.steamstatic.com/steamcommunity/public/images/apps/1145350/2d2d2d2d2d2d.jpg": {
+      "status": 200,
+      "body": "images/tiny.jpg",
+      "content_type": "image/jpeg"
+    },
+    "https://cdn.cloudflare.steamstatic.com/steamcommunity/public/images/apps/1245620/1c1c1c1c1c1c1c1c1c1c.jpg": {
+      "status": 200,
+      "body": "images/tiny.jpg",
+      "content_type": "image/jpeg"
+    },
+    "https://cdn.cloudflare.steamstatic.com/steamcommunity/public/images/apps/400910/3e3e3e3e.jpg": {
+      "status": 200,
+      "body": "images/tiny.jpg",
+      "content_type": "image/jpeg"
+    },
+    "https://cdn2.steamgriddb.com/file/sgdb-cdn/grid/full/fan-hero.jpg": {
+      "status": 200,
+      "body": "images/tiny.jpg",
+      "content_type": "image/jpeg"
+    },
+    "https://cdn2.steamgriddb.com/file/sgdb-cdn/grid/full/fan-icon.png": {
+      "status": 200,
+      "body": "images/tiny.png",
+      "content_type": "image/png"
+    },
+    "https://cdn2.steamgriddb.com/file/sgdb-cdn/grid/full/fan-landscape.png": {
+      "status": 200,
+      "body": "images/tiny.png",
+      "content_type": "image/png"
+    },
+    "https://cdn2.steamgriddb.com/file/sgdb-cdn/grid/full/fan-logo-official.png": {
+      "status": 200,
+      "body": "images/tiny.webp",
+      "content_type": "image/png"
+    },
+    "https://cdn2.steamgriddb.com/file/sgdb-cdn/grid/full/fan-logo-white.png": {
+      "status": 200,
+      "body": "images/tiny.png",
+      "content_type": "image/png"
+    },
+    "https://cdn2.steamgriddb.com/file/sgdb-cdn/grid/full/fan-portrait-best.png": {
+      "status": 200,
+      "body": "images/tiny.png",
+      "content_type": "image/png"
+    },
+    "https://cdn2.steamgriddb.com/file/sgdb-cdn/grid/full/occ-logo.png": {
+      "status": 200,
+      "body": "images/tiny.png",
+      "content_type": "image/png"
+    },
+    "https://store.steampowered.com/api/storesearch/?term=Rate+Limited+Game&l=english&cc=US": {
+      "status": 429,
+      "body": null,
+      "headers": {
+        "Retry-After": "1"
+      }
+    },
+    "https://store.steampowered.com/api/storesearch/?term=Totally+Unknown+Title&l=english&cc=US": {
+      "status": 200,
+      "body": "responses/steam-storesearch-unknown.json",
+      "content_type": "application/json"
+    },
+    "https://www.steamgriddb.com/api/v2/games/id/5297?platformdata=steam": {
+      "status": 200,
+      "body": "responses/sgdb-game-5297.json",
+      "content_type": "application/json"
+    },
+    "https://www.steamgriddb.com/api/v2/games/id/5468?platformdata=steam": {
+      "status": 200,
+      "body": "responses/sgdb-game-5468.json",
+      "content_type": "application/json"
+    },
+    "https://www.steamgriddb.com/api/v2/games/id/7001?platformdata=steam": {
+      "status": 200,
+      "body": "responses/sgdb-game-7001.json",
+      "content_type": "application/json"
+    },
+    "https://www.steamgriddb.com/api/v2/games/id/8100?platformdata=steam": {
+      "status": 200,
+      "body": "responses/sgdb-game-8100.json",
+      "content_type": "application/json"
+    },
+    "https://www.steamgriddb.com/api/v2/grids/game/7001?types=static&dimensions=460x215&styles=alternate&mimes=image/png,image/jpeg": {
+      "status": 200,
+      "body": "responses/sgdb-grids-7001-460x215.json",
+      "content_type": "application/json"
+    },
+    "https://www.steamgriddb.com/api/v2/grids/game/7001?types=static&dimensions=600x900&styles=alternate&mimes=image/png,image/jpeg": {
+      "status": 200,
+      "body": "responses/sgdb-grids-7001-600x900.json",
+      "content_type": "application/json"
+    },
+    "https://www.steamgriddb.com/api/v2/grids/game/7001?types=static&dimensions=920x430&styles=alternate&mimes=image/png,image/jpeg": {
+      "status": 200,
+      "body": "responses/sgdb-grids-7001-920x430-empty.json",
+      "content_type": "application/json"
+    },
+    "https://www.steamgriddb.com/api/v2/heroes/game/7001?types=static&dimensions=1920x620&styles=alternate&mimes=image/png,image/jpeg": {
+      "status": 200,
+      "body": "responses/sgdb-heroes-7001-1920x620.json",
+      "content_type": "application/json"
+    },
+    "https://www.steamgriddb.com/api/v2/icons/game/7001?types=static&styles=official&mimes=image/png": {
+      "status": 200,
+      "body": "responses/sgdb-icons-7001-official.json",
+      "content_type": "application/json"
+    },
+    "https://www.steamgriddb.com/api/v2/logos/game/7001?types=static&styles=official&mimes=image/png,image/jpeg": {
+      "status": 200,
+      "body": "responses/sgdb-logos-7001-official.json",
+      "content_type": "application/json"
+    },
+    "https://www.steamgriddb.com/api/v2/logos/game/7001?types=static&styles=white&mimes=image/png,image/jpeg": {
+      "status": 200,
+      "body": "responses/sgdb-logos-7001-white.json",
+      "content_type": "application/json"
+    },
+    "https://www.steamgriddb.com/api/v2/logos/game/8100?types=static&styles=official&mimes=image/png,image/jpeg": {
+      "status": 200,
+      "body": "responses/sgdb-logos-8100-official.json",
+      "content_type": "application/json"
+    },
+    "https://www.steamgriddb.com/api/v2/search/autocomplete/Elden%20Ring": {
+      "status": 200,
+      "body": "responses/sgdb-search-elden-ring.json",
+      "content_type": "application/json"
+    },
+    "https://www.steamgriddb.com/api/v2/search/autocomplete/Fan%20Made%20Adventure": {
+      "status": 200,
+      "body": "responses/sgdb-search-fan-made-adventure.json",
+      "content_type": "application/json"
+    },
+    "https://www.steamgriddb.com/api/v2/search/autocomplete/Hades%20II%E2%84%A2": {
+      "status": 200,
+      "body": "responses/sgdb-search-hades-ii.json",
+      "content_type": "application/json"
+    },
+    "https://www.steamgriddb.com/api/v2/search/autocomplete/Old%20Console%20Classic": {
+      "status": 200,
+      "body": "responses/sgdb-search-old-console-classic.json",
+      "content_type": "application/json"
+    },
+    "https://www.steamgriddb.com/api/v2/search/autocomplete/Rate%20Limited%20Game": {
+      "status": 429,
+      "body": null,
+      "headers": {
+        "Retry-After": "1"
+      }
+    },
+    "https://www.steamgriddb.com/api/v2/search/autocomplete/Totally%20Unknown%20Title": {
+      "status": 200,
+      "body": "responses/sgdb-search-unknown.json",
+      "content_type": "application/json"
+    }
+  }
+}

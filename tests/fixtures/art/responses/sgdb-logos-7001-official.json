@@ -1,0 +1,25 @@
+{
+  "_TODO": "SYNTHETIC FIXTURE -- invented, not captured. Replace with a real capture: SGDB_API_KEY=... python3 scripts/record_fixtures.py",
+  "success": true,
+  "data": [
+    {
+      "id": 105,
+      "score": 90,
+      "style": "official",
+      "width": 600,
+      "height": 900,
+      "mime": "image/png",
+      "nsfw": false,
+      "humor": false,
+      "epilepsy": false,
+      "language": "en",
+      "url": "https://cdn2.steamgriddb.com/file/sgdb-cdn/grid/full/fan-logo-official.png",
+      "thumb": "https://cdn2.steamgriddb.com/file/sgdb-cdn/grid/thumb/fan-logo-official.png",
+      "upvotes": 90,
+      "downvotes": 0,
+      "author": {
+        "name": "synthetic-uploader"
+      }
+    }
+  ]
+}

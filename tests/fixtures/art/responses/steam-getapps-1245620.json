@@ -1,0 +1,12 @@
+{
+  "_TODO": "SYNTHETIC FIXTURE -- invented, not captured. Replace with a real capture: SGDB_API_KEY=... python3 scripts/record_fixtures.py",
+  "response": {
+    "apps": [
+      {
+        "appid": 1245620,
+        "name": "ELDEN RING",
+        "icon": "1c1c1c1c1c1c1c1c1c1c"
+      }
+    ]
+  }
+}
