@@ -19,7 +19,10 @@ itself resolves artwork through that seam: :class:`SteamShortcutProvider`
 
 Implementations of ``set_icon`` must **not** write ``shortcuts.vdf`` on the
 spot: spec 3.6 wants exactly one atomic vdf write per run, after the whole
-art phase, which is what ``commit()`` is for.
+art phase, which is what ``commit()`` is for -- and :func:`run_art` does not
+call it either. The *caller* commits once the summary is out, because a
+commit can be refused (Steam is running and may not be restarted, exit 2)
+and that refusal must not swallow the progress report.
 
 Per-title flow (spec 3.5 and 3.9):
 
@@ -44,7 +47,7 @@ from moonlight_steam_sync.art.http import HardStop
 from moonlight_steam_sync.art.resolve import Match, Resolver
 from moonlight_steam_sync.art.select import ICON, SLOTS, Selector, Slot, existing_slot_file
 from moonlight_steam_sync.config import Config
-from moonlight_steam_sync.shortcuts import ShortcutsError, ShortcutsFile, quote
+from moonlight_steam_sync.shortcuts import Shortcut, ShortcutsError, ShortcutsFile, unquote
 
 #: Slot outcomes, as they appear in the progress lines.
 SOURCE_KEPT = "kept"  # a file was already there (spec 6.9)
@@ -93,19 +96,68 @@ class TargetsUnavailable(RuntimeError):
     """The shortcut layer could not produce the owned shortcuts."""
 
 
+#: How a provider gets its patched ``ShortcutsFile`` onto disk. Returns
+#: whether Steam was restarted to do it, so the caller knows whether the new
+#: artwork is already showing or still needs a restart.
+ShortcutsWriter = Callable[[ShortcutsFile], bool]
+
+
+def patch_icon(entry: Shortcut, icon_path: Path) -> bool:
+    """Point ``entry.icon`` at ``icon_path`` unless it already points at art that exists.
+
+    Spec 3.6 patches ``icon`` on adopted entries *whose icon file is new*.
+    An entry whose ``icon`` already names a file on disk -- the same one, or
+    one the user picked by hand in the Steam UI -- is left alone; only an
+    empty or dangling value is (re)pointed. The path is stored bare: that is
+    how Steam's own UI and every tool in this space write it, and how the
+    PR-2 fixture models a device file. Returns whether anything changed.
+    """
+    wanted = str(icon_path)
+    current = unquote(entry.icon)
+    if current == wanted:
+        return False
+    if current and Path(current).is_file():
+        return False
+    entry.icon = wanted
+    return True
+
+
+def write_when_steam_is_down(shortcuts_file: ShortcutsFile) -> bool:
+    """The default :data:`ShortcutsWriter`: write, or refuse if Steam is up.
+
+    A bare write under a live Steam is silently lost when Steam rewrites the
+    file on exit (spec 2.1), so this never does one. The ``sync`` module
+    supplies the writer that shuts Steam down, writes and relaunches it
+    (spec 3.6); this default is the safety net for any other caller. Never
+    restarts Steam, so always returns ``False``.
+    """
+    if steam.is_running():
+        raise steam.SteamRunningError(
+            "Steam is running, so shortcuts.vdf was not written (Steam would overwrite "
+            "it on exit). Quit Steam and rerun, or let `sync` restart it for you."
+        )
+    shortcuts_file.write()
+    return False
+
+
 class SteamShortcutProvider:
     """The real :class:`TargetProvider`, backed by ``steam``/``shortcuts``.
 
     Reads the owned entries out of the picked Steam user's ``shortcuts.vdf``
     (ownership is ``Exe`` == the configured ``exe``, spec 3.3), hands the art
     phase each one's stored appid and that user's grid directory, and holds
-    icon patches until :meth:`commit` performs the run's single atomic write.
+    icon patches until :meth:`commit` hands the file to ``writer`` for the
+    run's single atomic write. The default writer refuses to write while
+    Steam is running; ``sync`` injects the one that restarts Steam.
     """
 
-    def __init__(self, config: Config) -> None:
+    def __init__(self, config: Config, *, writer: ShortcutsWriter | None = None) -> None:
         self._config = config
+        self._writer: ShortcutsWriter = writer or write_when_steam_is_down
         self._file: ShortcutsFile | None = None
         self._grid_dir: Path | None = None
+        #: Set by :meth:`commit`: whether the writer bounced Steam.
+        self.restarted_steam = False
 
     def _load(self) -> tuple[ShortcutsFile, Path]:
         if self._file is None or self._grid_dir is None:
@@ -135,11 +187,12 @@ class SteamShortcutProvider:
         shortcuts_file, _ = self._load()
         entry = shortcuts_file.by_appid(appid)
         if entry is not None:
-            entry.icon = quote(str(icon_path))
+            patch_icon(entry, icon_path)
 
     def commit(self) -> None:
-        if self._file is not None:
-            self._file.write()
+        """Write the icon patches -- a no-op on disk when nothing changed."""
+        if self._file is not None and self._file.changed:
+            self.restarted_steam = bool(self._writer(self._file))
 
 
 def default_target_provider(config: Config) -> TargetProvider:
@@ -205,6 +258,20 @@ class RunSummary:
     @property
     def missing(self) -> int:
         return sum(1 for r in self.results for outcome in r.slots.values() if not outcome.filled)
+
+    @property
+    def written(self) -> int:
+        """Slots this run actually put a file in (``kept`` does not count).
+
+        ``sync`` uses it to decide whether Steam needs a restart at all: a
+        run that changed nothing on disk must not bounce the client.
+        """
+        return sum(
+            1
+            for r in self.results
+            for outcome in r.slots.values()
+            if outcome.filled and outcome.source != SOURCE_KEPT
+        )
 
     def lines(self) -> list[str]:
         lines = [
@@ -319,6 +386,10 @@ def run_art(
     outcome (spec 7). A :class:`~moonlight_steam_sync.art.http.HardStop` or a
     ``KeyboardInterrupt`` ends the run early with everything so far kept, and
     is reported in the summary; callers turn that into exit code 4 or 130.
+
+    Icon patches are *recorded* through ``provider.set_icon`` as each title
+    completes; ``provider.commit()`` is the caller's call, after the summary
+    and only when the run was not stopped early (spec 3.6 / 3.9 item 4).
     """
     summary = RunSummary()
     total = len(targets)
@@ -349,8 +420,6 @@ def run_art(
             on_title(result)
 
     resolver.cache.flush()
-    if provider is not None:
-        provider.commit()
     return summary
 
 
@@ -366,6 +435,7 @@ def slot_report(grid_dir: Path, appid: int) -> dict[str, str]:
 __all__ = [
     "ArtTarget",
     "RunSummary",
+    "ShortcutsWriter",
     "SlotOutcome",
     "TargetProvider",
     "SteamShortcutProvider",
@@ -374,6 +444,8 @@ __all__ = [
     "apply_title",
     "default_target_provider",
     "icon_path_for",
+    "patch_icon",
     "run_art",
     "slot_report",
+    "write_when_steam_is_down",
 ]

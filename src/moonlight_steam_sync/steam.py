@@ -36,6 +36,7 @@ __all__ = [
     "STEAM64_OFFSET",
     "SteamError",
     "SteamNotFoundError",
+    "SteamRunningError",
     "SteamUser",
     "SteamUserNotFoundError",
     "find_steam_root",
@@ -91,6 +92,15 @@ class SteamNotFoundError(SteamError):
 
 class SteamUserNotFoundError(SteamError):
     """The Steam user whose ``userdata`` directory to use could not be decided."""
+
+
+class SteamRunningError(SteamError):
+    """Steam is up when ``shortcuts.vdf`` has to be written, and may not be stopped.
+
+    Raised instead of writing (spec 3.6: Steam holds the file in memory and
+    rewrites it on exit, so an edit made under a live client is lost). Maps
+    to CLI exit code 2.
+    """
 
 
 # ---------------------------------------------------------------------------
