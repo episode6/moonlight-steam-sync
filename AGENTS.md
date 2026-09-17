@@ -69,12 +69,57 @@ one place for the shared urllib/pacing/backoff plumbing so `sgdb.py` and
 `__main__.py` and `config.py` landed in PR-1; `vdf.py`, `shortcuts.py` and
 `steam.py` (the whole Steam side) in PR-2; `moonlight.py` (binary discovery,
 `list_apps()`, `stream()`, wired into the `launch` subcommand) in PR-3; `art/`
-(the artwork engine plus the `art` and `status` subcommands) in PR-4. Every
-other subcommand in `__main__.py` is still a stub that exits 1 with "not
-implemented" until the PR that implements the rest of its chain lands
-(`sync.py` orchestration + the resumability e2e test in PR-5,
-`remove`/`list` polish in PR-6). Do not add code to a module ahead of its PR without checking the work plan first -- the modules are
-split the way they are so independent PRs can land in parallel.
+(the artwork engine plus the `art` and `status` subcommands) in PR-4; and
+`sync.py` (the `sync`, `list`, `ignore` and `remove` subcommands, the one
+shutdown -> write -> relaunch path, and the resumability e2e tests) in PR-5.
+Every subcommand in spec 3.3 is now real. What remains is PR-6 (the release
+zipapp and `install.sh`), the device checklist, and PR-7 in `server-scripts`.
+Do not add code to a module ahead of its PR without checking the work plan
+first -- the modules are split the way they are so independent PRs can land
+in parallel.
+
+### Working on the orchestration (`sync.py`)
+
+- **Never write `shortcuts.vdf` with Steam up.** Steam holds the file in
+  memory and rewrites it on exit, so the edit is silently lost (spec 2.1).
+  `sync.commit_shortcuts()` is the *only* path from an in-memory
+  `ShortcutsFile` to disk: it checks `steam.is_running()`, refuses with
+  `SteamRunningError` (exit 2) when `restart_steam` is false, and otherwise
+  does `steam -shutdown` -> wait -> write -> `steam -silent` with `SIGINT`
+  deferred across the window. `art` commits through it too
+  (`sync.steam_aware_provider`), and the fallback writer in `art/apply.py`
+  refuses rather than writes when Steam is running. Do not add a second
+  writer.
+- **Owned = exe match, not name match.** `ShortcutsFile.owned(config.exe)`
+  compares the unquoted `Exe` by realpath (spec 3.3). That is what adopts the
+  SteamTinkerLaunch-era entries and what keeps foreign shortcuts (an
+  emulator, a browser) out of `remove --all`. The Moonlight name behind an
+  owned entry comes from `Shortcut.moonlight_name()` (launch options first,
+  `AppName` minus the suffix as the fallback). Nothing in `sync.py` should
+  ever look a shortcut up by `AppName`.
+- **Progress lives on disk, never in memory.** The plan is computed from
+  `shortcuts.vdf`, the grid directory and `matches.json` every run; there is
+  no state file and no in-memory "done" set. New entries are appended to the
+  in-memory `ShortcutsFile` *before* the art phase (so icon patches can land
+  on them) but the file is only written afterwards, and not at all when the
+  art phase stopped early (`RunSummary.stopped_early`): a crash, a 429
+  storm or a Ctrl-C mid-art leaves `shortcuts.vdf` byte-identical and the
+  same command finishes the job. `tests/test_sync_e2e.py` proves this for a
+  500-title library at every phase boundary; keep it passing.
+- **One restart per run, and none when nothing changed.** `commit_shortcuts`
+  does nothing at all when the serialised file is unchanged and no art was
+  newly written this run (`RunSummary.written`, which excludes `kept`
+  slots). A second `sync` over a finished library makes zero HTTP calls, no
+  write and no restart.
+- **The `icon` field follows the file on disk.** `art.apply.patch_icon()`
+  stores the bare absolute path (the way Steam's own UI writes it) and only
+  repoints a field that is empty or dangling; a field that names an existing
+  file -- the same one, or one the user chose -- is left alone.
+  `sync.patch_icons_from_disk()` applies the same rule with `--no-art`.
+- **`--dry-run` resolves titles.** The only way to print a CDN URL per slot
+  is to know the Steam appid, so a dry run does make the lookup calls and
+  writes `matches.json` (the real run then reuses every resolution). It
+  downloads nothing and touches nothing under the Steam directory.
 
 ### Working on the Steam side (`vdf.py`, `shortcuts.py`, `steam.py`)
 
@@ -159,13 +204,19 @@ the ones that mention resumability by name -- must keep these invariants:
    restarts, no per-game `shortcuts.vdf` rewrites.
 
 The end-to-end resumability test (kill mid-run, rerun, assert only the
-remainder happens) lives in PR-5 against a 500-title fixture, but any module
-that touches disk state should have its own idempotency test well before
-then. `art/` already carries its share: a second pass over the same titles
-makes zero HTTP calls, an existing slot file is never re-downloaded, a
-connection that dies mid-download leaves only a `.part` and costs just that
-slot, and `matches.json` is on disk after every title
-(`tests/test_art_apply.py`).
+remainder happens) is `tests/test_sync_e2e.py` against a 500-title fixture:
+a fake HTTP layer dies after call N (parametrised across every phase
+boundary of a title: mid-resolve, mid-download, mid-body with a `.part`
+open, on the last call), or raises `KeyboardInterrupt`, or answers 429 from
+call N on; the test then asserts `shortcuts.vdf` was never created, exactly
+N-worth of cache entries and grid files exist, and the rerun's call list
+equals the list *derived from what is on disk* -- no lookups for a cached
+title, no download for a filled slot. Any module that touches disk state
+should have its own idempotency test as well. `art/` carries its share: a
+second pass over the same titles makes zero HTTP calls, an existing slot
+file is never re-downloaded, a connection that dies mid-download leaves only
+a `.part` and costs just that slot, and `matches.json` is on disk after
+every title (`tests/test_art_apply.py`).
 
 ### Artwork gotchas
 
@@ -248,7 +299,26 @@ Starting with the PR that needs each one:
   replacement, not a test rewrite. `tests/fixtures/art/make_synthetic.py`
   regenerates the synthetic set and documents what each title is for.
   The 1x1 images in `tests/fixtures/art/images/` are stand-ins on purpose and
-  do **not** need replacing: only their magic bytes are read.
+  do **not** need replacing: only their magic bytes are read. PR-5 added a
+  seventh title, `Hollow Knight`, so the adoptable entry in the PR-2
+  `shortcuts.vdf` fixture resolves (all official, like Elden Ring).
+- **A 500-title `moonlight list --csv` capture** (PR-5, `sync.py`):
+  `tests/fixtures/moonlight_list_large_synthetic.csv`, 500 rows named
+  `Synthetic Title 001`...`500`, generated by
+  `tests/fixtures/build_synthetic_moonlight_list.py` in the exact byte shape
+  moonlight-qt emits (same rules as the sample CSV above). It feeds the
+  resumability test through the fake `moonlight` script `tests/fakes.py`
+  puts on `PATH`; the artwork answers for it come from
+  `tests/art_fixtures.BulkTransport`, a pattern-based fake server (one exact
+  SteamGridDB match with a Steam release per title, every CDN asset present,
+  so a title costs exactly eight calls) rather than 500 titles of
+  recordings. **TODO:** replace the CSV with a real capture from the user's
+  largest host -- `moonlight list <host> --csv > moonlight_list_large_real.csv`,
+  scrub the host UUID in the `Boxart URL` paths and any home directory, drop
+  it in as `tests/fixtures/moonlight_list_large_real.csv`. The tests ask for
+  the large library by role (`large_library_csv` in `tests/conftest.py`) and
+  `BulkTransport` keys on the CSV's names, so nothing else changes. The ids
+  and images `BulkTransport` serves stay synthetic on purpose.
 
 Every synthetic fixture, wherever it lands, must carry a comment or file
 naming exactly what real capture should replace it and how to get it -- copy
@@ -257,6 +327,13 @@ the wording pattern above rather than a bare "TODO: replace me".
 point of view; keep the two in step. Tests must ask for a fixture *by role*
 (see the helpers in `tests/conftest.py`) so that swapping a synthetic file
 for a real capture is a file drop, never a test rewrite.
+
+The fakes for the outside world live in `tests/fakes.py` (`FakeRunner` for
+Steam's process, `make_steam_root()` + `$STEAM_ROOT` for the Steam tree,
+`install_fake_moonlight()` for the CLI) and `tests/art_fixtures.py`
+(`FakeTransport` over the recorded manifest, `BulkTransport` by pattern).
+New end-to-end tests should build on those rather than monkeypatching
+`subprocess` or `urllib` directly.
 
 ## Device checklist
 
