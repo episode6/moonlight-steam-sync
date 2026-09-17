@@ -16,6 +16,8 @@ synthetic file for a real capture is a file drop plus (for the real
 | `build_synthetic_shortcuts.py` | the raw-bytes generator for the above | nothing; it stays, and `test_vdf.py` asserts the committed fixture still matches its output |
 | `loginusers_synthetic.vdf` | Steam's text-KeyValues `config/loginusers.vdf` (spec 3.4) | a sanitised real `loginusers.vdf` |
 | `moonlight_list_sample.csv` | `moonlight list --csv` output (spec 2.1/2.3) | real `moonlight list <host> --csv` output, host UUID scrubbed |
+| `moonlight_list_large_synthetic.csv` | the same, from a 500-title host (spec 7; the resumability test in `tests/test_sync_e2e.py`) | `moonlight_list_large_real.csv` -- a real capture from the biggest host, host UUID scrubbed |
+| `build_synthetic_moonlight_list.py` | the generator for the above | nothing; it stays and documents the capture |
 
 ## TODO: `shortcuts_real.vdf`
 
@@ -74,6 +76,22 @@ with the host UUID in the `Boxart URL` column's cache path scrubbed to
 something like `<host-uuid>`. Capturing it is a one-line run: `moonlight
 list <host> --csv > moonlight_list_<host>.csv`, then hand-edit out any
 real host name, UUID, or absolute home directory before committing.
+
+## `moonlight_list_large_synthetic.csv`
+
+**SYNTHETIC -- TODO: replace with real data.** 500 rows, `Synthetic Title
+001` through `500`, no cached box art, in the same byte shape as the sample
+above (`build_synthetic_moonlight_list.py` writes it through the same
+`csv_row()` helper the end-to-end tests use). It exists so the resumability
+test (spec PR-5 (b), 3.9) runs against a library the size of the user's
+real one: a fake HTTP layer dies after N calls, and the rerun must do
+exactly the remaining work.
+
+TODO: replace with `moonlight list <host> --csv > moonlight_list_large_real.csv`
+from the largest host, host UUID and home directory scrubbed as for the
+sample. `tests/conftest.py`'s `large_library_csv` fixture prefers the real
+file when it exists; the fake art server for the test keys on the CSV's
+names, so real names work unchanged.
 
 ## Fixtures owned by other PRs
 

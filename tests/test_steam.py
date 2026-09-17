@@ -28,54 +28,10 @@ from moonlight_steam_sync.steam import (
     shutdown,
     steamid3_from_steam64,
 )
+from tests.fakes import FakeRunner
 
 MOST_RECENT_STEAM64 = 76561197960500000
 OTHER_STEAM64 = 76561197960400000
-
-
-# --- fakes -----------------------------------------------------------------
-
-
-class FakeRunner(ProcessRunner):
-    """Records every call and answers from a scripted plan.
-
-    ``running`` is the number of ``is_running`` probes that still report a
-    live Steam; ``steam -shutdown`` sets it to ``after_shutdown``.
-    """
-
-    def __init__(self, *, running: bool = False, pgrep_missing: bool = False) -> None:
-        self.running = running
-        self.pgrep_missing = pgrep_missing
-        self.calls: list[list[str]] = []
-        self.spawned: list[list[str]] = []
-        self.slept = 0.0
-        self.clock = 0.0
-        self.shutdown_after_polls: int | None = None
-        self._polls = 0
-
-    def run(self, cmd, *, timeout: float = 10.0) -> subprocess.CompletedProcess:
-        self.calls.append(list(cmd))
-        if cmd[0] == "pgrep":
-            if self.pgrep_missing:
-                raise FileNotFoundError("pgrep")
-            self._polls += 1
-            if self.shutdown_after_polls is not None and self._polls > self.shutdown_after_polls:
-                self.running = False
-            return subprocess.CompletedProcess(cmd, 0 if self.running else 1, "", "")
-        if cmd[:2] == ["steam", "-shutdown"]:
-            self.shutdown_after_polls = self._polls + 2
-            return subprocess.CompletedProcess(cmd, 0, "", "")
-        return subprocess.CompletedProcess(cmd, 0, "", "")
-
-    def spawn(self, cmd) -> None:
-        self.spawned.append(list(cmd))
-
-    def sleep(self, seconds: float) -> None:
-        self.slept += seconds
-        self.clock += seconds
-
-    def monotonic(self) -> float:
-        return self.clock
 
 
 def make_steam_tree(tmp_path, *, users=(), loginusers: str | None = None):
@@ -86,9 +42,6 @@ def make_steam_tree(tmp_path, *, users=(), loginusers: str | None = None):
     if loginusers is not None:
         (root / "config" / "loginusers.vdf").write_text(loginusers, encoding="utf-8")
     return root
-
-
-# --- text KeyValues --------------------------------------------------------
 
 
 def test_parse_loginusers_fixture(loginusers_text):

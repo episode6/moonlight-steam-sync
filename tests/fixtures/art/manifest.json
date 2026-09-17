@@ -13,6 +13,11 @@
       "body": "responses/steam-getapps-1245620.json",
       "content_type": "application/json"
     },
+    "https://api.steampowered.com/ICommunityService/GetApps/v1/?appids%5B0%5D=367520": {
+      "status": 200,
+      "body": "responses/steam-getapps-367520.json",
+      "content_type": "application/json"
+    },
     "https://api.steampowered.com/ICommunityService/GetApps/v1/?appids%5B0%5D=400910": {
       "status": 200,
       "body": "responses/steam-getapps-400910.json",
@@ -58,6 +63,26 @@
       "body": "images/tiny.png",
       "content_type": "image/png"
     },
+    "https://cdn.cloudflare.steamstatic.com/steam/apps/367520/header.jpg": {
+      "status": 200,
+      "body": "images/tiny.jpg",
+      "content_type": "image/jpeg"
+    },
+    "https://cdn.cloudflare.steamstatic.com/steam/apps/367520/library_600x900_2x.jpg": {
+      "status": 200,
+      "body": "images/tiny.jpg",
+      "content_type": "image/jpeg"
+    },
+    "https://cdn.cloudflare.steamstatic.com/steam/apps/367520/library_hero.jpg": {
+      "status": 200,
+      "body": "images/tiny.jpg",
+      "content_type": "image/jpeg"
+    },
+    "https://cdn.cloudflare.steamstatic.com/steam/apps/367520/logo.png": {
+      "status": 200,
+      "body": "images/tiny.png",
+      "content_type": "image/png"
+    },
     "https://cdn.cloudflare.steamstatic.com/steam/apps/400910/header.jpg": {
       "status": 200,
       "body": "images/tiny.jpg",
@@ -79,6 +104,11 @@
       "content_type": "image/jpeg"
     },
     "https://cdn.cloudflare.steamstatic.com/steamcommunity/public/images/apps/1245620/1c1c1c1c1c1c1c1c1c1c.jpg": {
+      "status": 200,
+      "body": "images/tiny.jpg",
+      "content_type": "image/jpeg"
+    },
+    "https://cdn.cloudflare.steamstatic.com/steamcommunity/public/images/apps/367520/4f4f4f4f.jpg": {
       "status": 200,
       "body": "images/tiny.jpg",
       "content_type": "image/jpeg"
@@ -133,6 +163,11 @@
     "https://store.steampowered.com/api/storesearch/?term=Totally+Unknown+Title&l=english&cc=US": {
       "status": 200,
       "body": "responses/steam-storesearch-unknown.json",
+      "content_type": "application/json"
+    },
+    "https://www.steamgriddb.com/api/v2/games/id/5241?platformdata=steam": {
+      "status": 200,
+      "body": "responses/sgdb-game-5241.json",
       "content_type": "application/json"
     },
     "https://www.steamgriddb.com/api/v2/games/id/5297?platformdata=steam": {
@@ -208,6 +243,11 @@
     "https://www.steamgriddb.com/api/v2/search/autocomplete/Hades%20II%E2%84%A2": {
       "status": 200,
       "body": "responses/sgdb-search-hades-ii.json",
+      "content_type": "application/json"
+    },
+    "https://www.steamgriddb.com/api/v2/search/autocomplete/Hollow%20Knight": {
+      "status": 200,
+      "body": "responses/sgdb-search-hollow-knight.json",
       "content_type": "application/json"
     },
     "https://www.steamgriddb.com/api/v2/search/autocomplete/Old%20Console%20Classic": {
