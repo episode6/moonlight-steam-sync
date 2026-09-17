@@ -55,12 +55,12 @@ def test_stub_commands_exit_1(command, capsys):
 
 
 @pytest.mark.parametrize("command", ["art", "status"])
-def test_art_and_status_need_the_shortcut_layer(command, capsys, tmp_path, monkeypatch):
-    """Implemented, but they need an appid -> grid dir lookup to run against.
+def test_art_and_status_need_a_steam_install(command, capsys, tmp_path, monkeypatch):
+    """Implemented, and wired to the real appid -> grid dir lookup.
 
-    Until the shortcut layer is wired in, both report that and exit 1 rather
-    than pretending they found an empty library. See
-    `moonlight_steam_sync.art.apply.default_target_provider`.
+    With no Steam tree to read shortcuts from, both report that and exit 1
+    rather than pretending they found an empty library. See
+    `moonlight_steam_sync.art.apply.SteamShortcutProvider`.
 
     Isolated from the developer's real config and key the same way
     `test_doctor_runs_and_exits_0` is: this must not read whatever happens to
@@ -70,9 +70,11 @@ def test_art_and_status_need_the_shortcut_layer(command, capsys, tmp_path, monke
     monkeypatch.setattr(config_module, "DEFAULT_KEY_FILE", tmp_path / "sgdb-api-key")
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
     monkeypatch.delenv("SGDB_API_KEY", raising=False)
+    monkeypatch.delenv("STEAM_ROOT", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path / "nowhere"))
 
     assert main([command]) == 1
-    assert "shortcut lookup" in capsys.readouterr().err
+    assert "no Steam installation" in capsys.readouterr().err
 
 
 def test_doctor_runs_and_exits_0(capsys, tmp_path, monkeypatch):

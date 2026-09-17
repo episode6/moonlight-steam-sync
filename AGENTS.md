@@ -113,8 +113,11 @@ class TargetProvider(Protocol):
 0x80000000`), which is knowable *before* the shortcut exists -- that is what
 lets the art phase run first (spec 3.6). `set_icon` must only *record* the
 icon patch: spec 3.6 wants one atomic `shortcuts.vdf` write per run, which is
-what `commit()` is for. `art` and `status` exit 1 with a clear message while
-no provider is wired up.
+what `commit()` is for. The real implementation is
+`art.apply.SteamShortcutProvider`, built on PR-2's `steam.pick_user()` /
+`SteamUser.grid_dir` and `ShortcutsFile.owned(exe)`; tests inject a fake
+through the `provider_factory` seam, and `art` / `status` exit 1 with the
+Steam-side error message when no install or user can be found.
 
 ## The resumability contract (spec 3.9)
 

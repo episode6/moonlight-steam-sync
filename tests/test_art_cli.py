@@ -166,11 +166,14 @@ def test_art_without_a_key_says_so_and_still_runs(tmp_path, grid_dir):
     assert "no SteamGridDB API key" in err
 
 
-def test_art_without_a_shortcut_layer_fails_cleanly(tmp_path, grid_dir):
+def test_art_without_a_steam_install_fails_cleanly(tmp_path, grid_dir, monkeypatch):
+    """The default provider is the real one now; no Steam tree means exit 1."""
+    monkeypatch.delenv("STEAM_ROOT", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path / "nowhere"))
     out, err = io.StringIO(), io.StringIO()
     code = cmd_art(args_for(["art"]), Config(), out=out, err=err)
     assert code == 1
-    assert "shortcut lookup" in err.getvalue()
+    assert "no Steam installation" in err.getvalue()
 
 
 def test_status_lists_the_slots_each_shortcut_has(tmp_path, grid_dir):
@@ -187,11 +190,13 @@ def test_status_lists_the_slots_each_shortcut_has(tmp_path, grid_dir):
     assert "2 shortcut(s), 1 with every slot filled" in printed
 
 
-def test_status_without_a_shortcut_layer_fails_cleanly() -> None:
+def test_status_without_a_steam_install_fails_cleanly(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("STEAM_ROOT", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path / "nowhere"))
     out, err = io.StringIO(), io.StringIO()
     code = cmd_status(args_for(["status"]), Config(), out=out, err=err)
     assert code == 1
-    assert "shortcut lookup" in err.getvalue()
+    assert "no Steam installation" in err.getvalue()
 
 
 def test_main_dispatches_art_and_status_through_the_injected_provider(

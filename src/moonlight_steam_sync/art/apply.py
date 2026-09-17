@@ -13,9 +13,9 @@ it through **one narrow seam** so the two can be built independently:
 ``appid`` is the shortcut's own 32-bit id (``crc32(Exe + AppName) |
 0x80000000``, spec 2.1), which is knowable *before* the shortcut exists, and
 ``grid_dir`` is ``userdata/<steamid3>/config/grid``. Nothing in this package
-parses ``shortcuts.vdf`` or discovers the Steam root: the shortcuts/steam
-modules (PR-2) supply the provider, and the ``sync`` orchestration (PR-5)
-supplies the Moonlight box art paths.
+itself resolves artwork through that seam: :class:`SteamShortcutProvider`
+(backed by the PR-2 ``steam``/``shortcuts`` modules) supplies it, and the
+``sync`` orchestration (PR-5) supplies the Moonlight box art paths.
 
 Implementations of ``set_icon`` must **not** write ``shortcuts.vdf`` on the
 spot: spec 3.6 wants exactly one atomic vdf write per run, after the whole
@@ -39,9 +39,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, TextIO
 
+from moonlight_steam_sync import steam
 from moonlight_steam_sync.art.http import HardStop
 from moonlight_steam_sync.art.resolve import Match, Resolver
 from moonlight_steam_sync.art.select import ICON, SLOTS, Selector, Slot, existing_slot_file
+from moonlight_steam_sync.config import Config
+from moonlight_steam_sync.shortcuts import ShortcutsError, ShortcutsFile, quote
 
 #: Slot outcomes, as they appear in the progress lines.
 SOURCE_KEPT = "kept"  # a file was already there (spec 6.9)
@@ -87,21 +90,61 @@ class TargetProvider(Protocol):
 
 
 class TargetsUnavailable(RuntimeError):
-    """No shortcut layer is wired up yet (see :func:`default_target_provider`)."""
+    """The shortcut layer could not produce the owned shortcuts."""
 
 
-def default_target_provider() -> TargetProvider:
-    """The provider used when nothing else is injected.
+class SteamShortcutProvider:
+    """The real :class:`TargetProvider`, backed by ``steam``/``shortcuts``.
 
-    PR-4 ships the artwork phase on its own; reading ``shortcuts.vdf`` to
-    discover owned shortcuts is PR-2's module, and assembling the two is
-    PR-5's ``sync``. Until then ``art`` and ``status`` fail with a clear
-    message rather than pretending they have a library.
+    Reads the owned entries out of the picked Steam user's ``shortcuts.vdf``
+    (ownership is ``Exe`` == the configured ``exe``, spec 3.3), hands the art
+    phase each one's stored appid and that user's grid directory, and holds
+    icon patches until :meth:`commit` performs the run's single atomic write.
     """
-    raise TargetsUnavailable(
-        "the shortcut lookup (shortcuts.vdf -> appid + grid dir) is not wired up yet; "
-        "it lands with the Steam-side modules"
-    )
+
+    def __init__(self, config: Config) -> None:
+        self._config = config
+        self._file: ShortcutsFile | None = None
+        self._grid_dir: Path | None = None
+
+    def _load(self) -> tuple[ShortcutsFile, Path]:
+        if self._file is None or self._grid_dir is None:
+            try:
+                user = steam.pick_user(steam.find_steam_root())
+            except steam.SteamError as exc:
+                raise TargetsUnavailable(str(exc)) from exc
+            try:
+                self._file = ShortcutsFile.read(user.shortcuts_path)
+            except ShortcutsError as exc:
+                raise TargetsUnavailable(f"could not read {user.shortcuts_path}: {exc}") from exc
+            self._grid_dir = user.grid_dir
+        return self._file, self._grid_dir
+
+    def targets(self) -> Sequence[ArtTarget]:
+        shortcuts_file, grid_dir = self._load()
+        return [
+            ArtTarget(
+                name=entry.moonlight_name(self._config.launch_options, self._config.name_suffix),
+                appid=entry.appid,
+                grid_dir=grid_dir,
+            )
+            for entry in shortcuts_file.owned(self._config.exe)
+        ]
+
+    def set_icon(self, appid: int, icon_path: Path) -> None:
+        shortcuts_file, _ = self._load()
+        entry = shortcuts_file.by_appid(appid)
+        if entry is not None:
+            entry.icon = quote(str(icon_path))
+
+    def commit(self) -> None:
+        if self._file is not None:
+            self._file.write()
+
+
+def default_target_provider(config: Config) -> TargetProvider:
+    """The provider used when nothing else is injected."""
+    return SteamShortcutProvider(config)
 
 
 @dataclass
@@ -157,15 +200,11 @@ class RunSummary:
 
     @property
     def filled(self) -> int:
-        return sum(
-            1 for r in self.results for outcome in r.slots.values() if outcome.filled
-        )
+        return sum(1 for r in self.results for outcome in r.slots.values() if outcome.filled)
 
     @property
     def missing(self) -> int:
-        return sum(
-            1 for r in self.results for outcome in r.slots.values() if not outcome.filled
-        )
+        return sum(1 for r in self.results for outcome in r.slots.values() if not outcome.filled)
 
     def lines(self) -> list[str]:
         lines = [
@@ -174,9 +213,7 @@ class RunSummary:
         ]
         unmatched = self.unmatched
         if unmatched:
-            lines.append(
-                f"no match for {len(unmatched)} title(s): " + ", ".join(sorted(unmatched))
-            )
+            lines.append(f"no match for {len(unmatched)} title(s): " + ", ".join(sorted(unmatched)))
             lines.append(
                 "that is an accepted outcome -- set those by hand in the Steam UI and "
                 "this tool will never overwrite them"
@@ -287,9 +324,7 @@ def run_art(
     total = len(targets)
     for index, target in enumerate(targets, start=1):
         try:
-            result = apply_title(
-                target, resolver, selector, force=force, explain=explain
-            )
+            result = apply_title(target, resolver, selector, force=force, explain=explain)
         except HardStop as exc:
             summary.stopped_early = True
             summary.stop_reason = str(exc)
@@ -333,6 +368,7 @@ __all__ = [
     "RunSummary",
     "SlotOutcome",
     "TargetProvider",
+    "SteamShortcutProvider",
     "TargetsUnavailable",
     "TitleResult",
     "apply_title",

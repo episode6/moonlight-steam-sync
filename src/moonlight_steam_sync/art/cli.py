@@ -100,7 +100,9 @@ def _resolve_targets(
 ) -> tuple[TargetProvider, list[ArtTarget]] | None:
     try:
         provider = (
-            provider_factory(config) if provider_factory is not None else default_target_provider()
+            provider_factory(config)
+            if provider_factory is not None
+            else default_target_provider(config)
         )
         return provider, list(provider.targets())
     except TargetsUnavailable as exc:
