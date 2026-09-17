@@ -134,7 +134,9 @@ Rules worth knowing:
 
 - **Artwork you set by hand is never overwritten.** A slot that already has a
   file in `grid/` is skipped, because the Steam UI writes those very
-  filenames. `art --force` is the way to re-fetch anyway.
+  filenames. `art --force` is the way to re-fetch anyway; it *replaces* what
+  is in the slot, including a file whose extension differs from the new one,
+  so a slot never ends up holding both a `.png` and a `.jpg`.
 - **A title or a slot with no art is not an error.** It is listed in the
   summary; fill it in from the Steam UI and the rule above keeps it.
 - Unmatched titles and empty slots are remembered for 7 days so a re-run does
@@ -155,8 +157,9 @@ whole library at once.
 
 The tool paces itself between calls (`request_interval_ms`), backs off on
 429s and 5xxs, and stops outright after five 429s in a row rather than burn
-your API key -- everything already written is kept, and re-running the same
-command picks up where it left off.
+your API key -- or after five network failures in a row, which is the Wi-Fi
+having gone rather than the art being missing. Either way everything already
+written is kept, and re-running the same command picks up where it left off.
 
 ## Development
 

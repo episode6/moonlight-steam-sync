@@ -22,17 +22,22 @@ shipped default is :func:`urllib_transport`.
 Responses stream in chunks rather than arriving as one ``bytes``: that is what
 lets a download write ``<file>.part`` incrementally, so an interrupted
 download leaves a ``.part`` and never a truncated file that would count as
-done (spec 3.9 item 3).
+done (spec 3.9 item 3). A transport failure *while the body is streaming* --
+the likeliest failure on a Deck over Wi-Fi in a 2,500-call run -- is
+translated into :class:`NetworkError` and counted by the same
+consecutive-failure counter as a failure on the request itself, so it ends a
+run with exit code 4 rather than a bare ``OSError`` traceback.
 """
 
 from __future__ import annotations
 
+import http.client
 import json
 import random
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -85,6 +90,17 @@ class NetworkHardStop(HardStop):
     """Five consecutive transport failures: the network is gone."""
 
 
+#: What a dying connection raises *while the body is being read*, as opposed
+#: to from the request itself. ``http.client`` raises ``IncompleteRead``;
+#: everything else (``socket.timeout``, ``ConnectionResetError``) is an
+#: ``OSError``.
+BODY_TRANSPORT_ERRORS: tuple[type[BaseException], ...] = (
+    NetworkError,
+    OSError,
+    http.client.HTTPException,
+)
+
+
 @dataclass
 class StreamResponse:
     """A response whose body is consumed as an iterator of chunks."""
@@ -93,14 +109,27 @@ class StreamResponse:
     headers: Mapping[str, str]
     chunks: Iterator[bytes]
     url: str
+    #: Fired once when the exchange finishes cleanly -- the body was read to
+    #: the end, or the response was closed without an error. :class:`Fetcher`
+    #: hangs the "the network is alive again" reset off it.
+    on_complete: Callable[[], None] | None = field(default=None, repr=False)
 
     def read_all(self) -> bytes:
         return b"".join(self.chunks)
+
+    def complete(self) -> None:
+        """Fire :attr:`on_complete`, at most once."""
+        callback, self.on_complete = self.on_complete, None
+        if callback is not None:
+            callback()
 
     def close(self) -> None:
         close = getattr(self.chunks, "close", None)
         if close is not None:
             close()
+        # Headers arrived and we chose not to read the body (a 404, a 429 we
+        # are about to retry): the exchange itself succeeded.
+        self.complete()
 
 
 class Transport(Protocol):
@@ -114,7 +143,12 @@ class Transport(Protocol):
 def _iter_body(response: Any) -> Iterator[bytes]:
     try:
         while True:
-            chunk = response.read(_CHUNK_SIZE)
+            try:
+                chunk = response.read(_CHUNK_SIZE)
+            except (OSError, http.client.HTTPException) as exc:
+                # The connection died mid-body. Callers up the stack handle
+                # HttpError; a raw OSError would escape every one of them.
+                raise NetworkError(f"{response.url}: {exc}") from exc
             if not chunk:
                 return
             yield chunk
@@ -183,17 +217,14 @@ class Fetcher:
             try:
                 response = self.transport(url, request_headers, self.timeout)
             except NetworkError:
-                self._consecutive_network_errors += 1
-                if self._consecutive_network_errors >= MAX_CONSECUTIVE_NETWORK_ERRORS:
-                    raise NetworkHardStop(
-                        f"{self._consecutive_network_errors} consecutive network failures; "
-                        "stopping. Everything already written is kept; rerun to continue."
-                    ) from None
+                failure = self._network_failure(url)
+                if isinstance(failure, HardStop):
+                    raise failure from None
                 if attempt == self.max_tries:
                     raise
                 self._backoff(attempt, None)
                 continue
-            self._consecutive_network_errors = 0
+            response = self._watch_body(response)
 
             if response.status == 429:
                 response.close()
@@ -233,6 +264,53 @@ class Fetcher:
             return json.loads(body.decode("utf-8"))
         except (UnicodeDecodeError, ValueError) as exc:
             raise HttpError(f"{url}: malformed JSON response") from exc
+
+    # -- the network-alive counter ---------------------------------------
+
+    def _network_failure(self, detail: str) -> HttpError:
+        """Count one transport failure and say what to raise for it.
+
+        Failures during a request and failures halfway through a body feed
+        the same counter (spec 3.9 item 6): five in a row means the network
+        is gone, which ends the run with exit code 4 and everything already
+        written kept.
+        """
+        self._consecutive_network_errors += 1
+        if self._consecutive_network_errors >= MAX_CONSECUTIVE_NETWORK_ERRORS:
+            return NetworkHardStop(
+                f"{self._consecutive_network_errors} consecutive network failures; "
+                "stopping. Everything already written is kept; rerun to continue."
+            )
+        return NetworkError(detail)
+
+    def _network_ok(self) -> None:
+        self._consecutive_network_errors = 0
+
+    def _watch_body(self, response: StreamResponse) -> StreamResponse:
+        """Wrap the body so a connection that dies mid-stream is structured.
+
+        Without this, a ``ConnectionResetError`` (or an ``IncompleteRead``,
+        or a read timeout) raised while a download iterates the chunks walks
+        straight past every ``except HttpError`` in the artwork stack and out
+        of ``main`` as a traceback.
+        """
+        source = response.chunks
+
+        def watched() -> Iterator[bytes]:
+            try:
+                yield from source
+            except BODY_TRANSPORT_ERRORS as exc:
+                detail = str(exc) if isinstance(exc, NetworkError) else f"{response.url}: {exc}"
+                raise self._network_failure(detail) from exc
+            finally:
+                close = getattr(source, "close", None)
+                if close is not None:
+                    close()
+            response.complete()
+
+        response.chunks = watched()
+        response.on_complete = self._network_ok
+        return response
 
     def _pace(self) -> None:
         if self.interval_ms <= 0:

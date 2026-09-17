@@ -55,13 +55,22 @@ def test_stub_commands_exit_1(command, capsys):
 
 
 @pytest.mark.parametrize("command", ["art", "status"])
-def test_art_and_status_need_the_shortcut_layer(command, capsys):
+def test_art_and_status_need_the_shortcut_layer(command, capsys, tmp_path, monkeypatch):
     """Implemented, but they need an appid -> grid dir lookup to run against.
 
     Until the shortcut layer is wired in, both report that and exit 1 rather
     than pretending they found an empty library. See
     `moonlight_steam_sync.art.apply.default_target_provider`.
+
+    Isolated from the developer's real config and key the same way
+    `test_doctor_runs_and_exits_0` is: this must not read whatever happens to
+    be in ~/.config on the machine running it.
     """
+    monkeypatch.setattr(config_module, "DEFAULT_CONFIG_PATH", tmp_path / "config.toml")
+    monkeypatch.setattr(config_module, "DEFAULT_KEY_FILE", tmp_path / "sgdb-api-key")
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    monkeypatch.delenv("SGDB_API_KEY", raising=False)
+
     assert main([command]) == 1
     assert "shortcut lookup" in capsys.readouterr().err
 

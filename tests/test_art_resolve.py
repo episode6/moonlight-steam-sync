@@ -140,9 +140,26 @@ def test_overrides_pin_a_title_and_skip_art_entirely(tmp_path) -> None:
 
 
 def test_an_sgdb_pin_still_looks_up_the_steam_release(tmp_path) -> None:
-    resolver, _, _ = build(tmp_path, overrides={"Pinned": {"sgdb": 5297}})
+    resolver, transport, _ = build(tmp_path, overrides={"Pinned": {"sgdb": 5297}})
     match = resolver.resolve("Pinned")
     assert (match.sgdb_id, match.steam_appid) == (5297, 1245620)
+
+    # ...once. A pinned title costing one call per run would break "a second
+    # pass does only the remaining work" (spec 3.9 item 1).
+    before = len(transport.calls)
+    again = resolver.resolve("Pinned")
+    assert len(transport.calls) == before
+    assert again.steam_appid == 1245620
+
+
+def test_editing_an_sgdb_pin_re_queries_the_steam_release(tmp_path) -> None:
+    resolver, transport, _ = build(tmp_path, overrides={"Pinned": {"sgdb": 5297}})
+    resolver.resolve("Pinned")
+    before = len(transport.calls)
+    resolver.overrides = {"Pinned": {"sgdb": 5468}}
+    match = resolver.resolve("Pinned")
+    assert len(transport.calls) > before
+    assert (match.sgdb_id, match.steam_appid) == (5468, 1145350)
 
 
 # -- the cache -------------------------------------------------------------
@@ -216,9 +233,21 @@ def test_a_corrupt_cache_is_a_miss_not_a_crash(tmp_path) -> None:
 
 def test_a_stale_slot_miss_is_retried(tmp_path) -> None:
     cache = MatchCache(tmp_path / "matches.json")
+    cache.put(Match(name="A", steam_appid=1, how="sgdb:exact"))
     old = datetime.now(UTC) - NEGATIVE_TTL - timedelta(minutes=1)
     cache.record_missing_slot("A", "logo", when=old)
     assert cache.slot_is_known_missing("A", "logo") is False
+
+
+def test_a_slot_miss_for_an_unresolved_title_is_not_recorded(tmp_path) -> None:
+    # The back door onto the negative cache: a title whose own lookup failed
+    # has no entry, and inventing one here would start a 7-day window off a
+    # SteamGridDB 5xx or a timeout (spec 6.10).
+    cache = MatchCache(tmp_path / "matches.json")
+    cache.record_missing_slot("Never Resolved", "logo")
+    cache.flush()
+    assert "Never Resolved" not in cache
+    assert not (tmp_path / "matches.json").exists()
 
 
 def test_a_transient_lookup_failure_is_never_cached_as_a_miss(tmp_path) -> None:

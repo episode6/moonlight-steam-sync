@@ -128,6 +128,36 @@ def test_art_reports_the_rate_limit_hard_stop_with_exit_code_four(tmp_path, grid
     assert "rerun the same command to continue" in out
 
 
+def test_a_dropped_connection_mid_download_never_escapes_as_a_traceback(tmp_path, grid_dir):
+    # A body that dies halfway is the likeliest failure on a Deck over Wi-Fi.
+    # It must cost the slot, not the run: no bare OSError out of cmd_art, and
+    # no exit 1 (which spec 3.3 reserves for usage and config errors).
+    url = "https://cdn.cloudflare.steamstatic.com/steam/apps/1245620/library_600x900_2x.jpg"
+    code, out, _, _, provider = run_art_cmd(
+        tmp_path,
+        grid_dir,
+        ["art", "--only", "Elden Ring"],
+        transport=FakeTransport(truncate_after={url: 1}),
+    )
+    assert code == 0
+    assert "[1/1] Elden Ring: portrait=missing" in out
+    # Everything else about that title still landed, including the icon patch.
+    assert "hero=official" in out
+    assert provider.icons and provider.commits == 1
+
+
+def test_a_ctrl_c_exits_130_and_says_how_to_resume(tmp_path, grid_dir):
+    url = "https://www.steamgriddb.com/api/v2/search/autocomplete/Elden%20Ring"
+    transport = FakeTransport(fail_with={url: KeyboardInterrupt()})
+    code, out, err, _, _ = run_art_cmd(
+        tmp_path, grid_dir, ["art", "--only", "Elden Ring"], transport=transport
+    )
+    assert code == 130
+    assert "everything written so far is kept" in out
+    # Spec 3.9 item 5 asks for this wording on SIGINT.
+    assert "resume with the same command" in err
+
+
 def test_art_without_a_key_says_so_and_still_runs(tmp_path, grid_dir):
     code, _, err, transport, _ = run_art_cmd(
         tmp_path, grid_dir, ["art"], config=Config(sgdb_api_key="")

@@ -25,7 +25,10 @@ Two rules from spec 3.9 live here:
   killed run never leaves a truncated image that would count as done.
 * **A slot whose file already exists is skipped** (spec 6.9). That is both
   the resume mechanism and the "never clobber hand-picked art" rule, since
-  the Steam UI writes these very filenames.
+  the Steam UI writes these very filenames. When ``--force`` does refill a
+  slot, whatever was there is removed even if the new image has a different
+  extension -- a slot holds one file, never a ``.png`` and a ``.jpg`` racing
+  each other.
 
 WebP is never requested (:mod:`moonlight_steam_sync.art.sgdb` enforces the
 query filters) and never written (the sniffer only accepts PNG and JPEG).
@@ -278,8 +281,11 @@ class Selector:
         """Download ``url`` to ``<dest_base>.part``, sniff, rename into place.
 
         Returns the final path, or ``None`` when the source had nothing (a
-        404, an empty body, or bytes that are not PNG/JPEG). Any exception
-        during the transfer propagates with the ``.part`` left behind.
+        404, an empty body, or bytes that are not PNG/JPEG). A connection
+        that dies mid-body raises
+        :class:`~moonlight_steam_sync.art.http.NetworkError` with the
+        ``.part`` left behind; :meth:`fill` treats that like any other failed
+        attempt and moves to the next source.
         """
         response = self.fetcher.open(url, accept="image/png,image/jpeg")
         if response.status != 200:
@@ -324,7 +330,25 @@ def _finish(part: Path, dest_base: Path, header: bytes) -> Path | None:
         return None
     final = Path(str(dest_base) + extension)
     os.replace(part, final)
+    _drop_other_extensions(dest_base, final)
     return final
+
+
+def _drop_other_extensions(dest_base: Path, final: Path) -> None:
+    """A slot holds exactly one file, whatever extension it arrives with.
+
+    Only ``--force`` ever reaches here with something already in the slot (a
+    filled slot is skipped on every other run), and leaving the old file
+    behind would undo the ``--force``: Steam's choice between
+    ``<base>.png`` and ``<base>.jpg`` is undefined, ``status`` reports
+    whichever :data:`ART_EXTENSIONS` lists first, and the next non-force run
+    would call the stale file "kept" and patch the shortcut's ``icon`` field
+    back to it (spec 6.9, 3.5, 3.6).
+    """
+    for extension in ART_EXTENSIONS:
+        stale = Path(str(dest_base) + extension)
+        if stale != final:
+            stale.unlink(missing_ok=True)
 
 
 def _first_usable_url(assets: Sequence[dict]) -> tuple[str, str] | None:

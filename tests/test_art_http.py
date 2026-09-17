@@ -147,3 +147,64 @@ def test_malformed_json_is_reported_not_swallowed() -> None:
     fetcher, _ = make(lambda url, headers, timeout: ok(url, body=b"<html>nope</html>"))
     with pytest.raises(Exception, match="malformed JSON"):
         fetcher.get_json("https://example.invalid/x")
+
+
+def dying_body(chunks: int = 1) -> StreamResponse:
+    """A response whose connection drops partway through the body."""
+
+    def body():
+        for _ in range(chunks):
+            yield b"partial"
+        raise ConnectionResetError("connection reset by peer")
+
+    return body()
+
+
+def test_a_body_that_dies_mid_stream_becomes_a_network_error() -> None:
+    fetcher, _ = make(
+        lambda url, headers, timeout: StreamResponse(200, {}, dying_body(), url)
+    )
+    response = fetcher.open("https://example.invalid/art.jpg")
+    with pytest.raises(NetworkError):
+        response.read_all()
+
+
+def test_mid_body_failures_feed_the_same_hard_stop_counter() -> None:
+    def transport(url, headers, timeout):
+        return StreamResponse(200, {}, dying_body(), url)
+
+    fetcher, _ = make(transport)
+    for _ in range(MAX_CONSECUTIVE_NETWORK_ERRORS - 1):
+        with pytest.raises(NetworkError):
+            fetcher.open("https://example.invalid/art.jpg").read_all()
+    # The fifth one in a row is the network being gone, not one bad asset.
+    with pytest.raises(NetworkHardStop):
+        fetcher.open("https://example.invalid/art.jpg").read_all()
+
+
+def test_a_body_read_to_the_end_clears_the_counter() -> None:
+    bodies = iter([dying_body(), iter([b"{}"]), dying_body()])
+
+    def transport(url, headers, timeout):
+        return StreamResponse(200, {}, next(bodies), url)
+
+    fetcher, _ = make(transport)
+    with pytest.raises(NetworkError):
+        fetcher.open("https://example.invalid/a").read_all()
+    fetcher.get_json("https://example.invalid/b")
+    with pytest.raises(NetworkError):
+        fetcher.open("https://example.invalid/c").read_all()
+    # Still a NetworkError, never a hard stop: the good response in between
+    # proved the network is alive.
+
+
+def test_closing_a_response_without_reading_it_keeps_the_network_alive() -> None:
+    statuses = iter([404, 404, 404, 404, 200])
+
+    def transport(url, headers, timeout):
+        return ok(url, status=next(statuses))
+
+    fetcher, _ = make(transport)
+    for _ in range(4):
+        fetcher.open("https://example.invalid/missing.jpg").close()
+    assert fetcher.open("https://example.invalid/found.jpg").status == 200

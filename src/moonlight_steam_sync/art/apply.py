@@ -233,9 +233,13 @@ def apply_title(
         )
         if fill is None:
             result.slots[slot.key] = SlotOutcome(slot.key, SOURCE_MISSING)
-            if selector.last_attempt_failed:
-                # A lookup failed rather than "no source has this image":
-                # do not start a 7-day negative window on a transient error.
+            if match.transient or selector.last_attempt_failed:
+                # A lookup failed rather than "no source has this image": do
+                # not start a 7-day negative window on a transient error.
+                # ``match.transient`` covers the case where it was the *title*
+                # search that failed -- the slot loop then finds nothing to
+                # try, so no source reports a failure of its own, and the
+                # cache must still be left alone (spec 6.10).
                 chain.append(f"{slot.key}: lookup failed, not cached as missing")
             else:
                 cache.record_missing_slot(target.name, slot.key)

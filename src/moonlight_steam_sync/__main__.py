@@ -53,7 +53,10 @@ def build_parser() -> argparse.ArgumentParser:
     art_p.add_argument(
         "--force",
         action="store_true",
-        help="re-fetch every slot, ignoring both the match cache and files already in grid/",
+        help=(
+            "re-fetch every slot, ignoring the match cache, and replace the files "
+            "already in grid/ (a slot ends up with exactly one file)"
+        ),
     )
     art_p.add_argument(
         "--retry-missing",

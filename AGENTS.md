@@ -159,9 +159,10 @@ The end-to-end resumability test (kill mid-run, rerun, assert only the
 remainder happens) lives in PR-5 against a 500-title fixture, but any module
 that touches disk state should have its own idempotency test well before
 then. `art/` already carries its share: a second pass over the same titles
-makes zero HTTP calls, an existing slot file is never re-downloaded, an
-exception mid-download leaves only a `.part`, and `matches.json` is on disk
-after every title (`tests/test_art_apply.py`).
+makes zero HTTP calls, an existing slot file is never re-downloaded, a
+connection that dies mid-download leaves only a `.part` and costs just that
+slot, and `matches.json` is on disk after every title
+(`tests/test_art_apply.py`).
 
 ### Artwork gotchas
 
@@ -174,10 +175,23 @@ after every title (`tests/test_art_apply.py`).
   `<appid>_icon`).
 - **A slot that already has a file is never touched without `--force`.** The
   Steam UI writes the same filenames, so that rule is what keeps hand-picked
-  art safe -- and it doubles as the resume mechanism.
-- **A transient failure is never cached as a miss.** A 5xx, a timeout or a
-  429 that exhausted its retries leaves no negative entry; only "the source
-  genuinely has no image for this slot" starts the 7-day window.
+  art safe -- and it doubles as the resume mechanism. When `--force` *does*
+  refill a slot, the old file goes even if the new image has a different
+  extension: two files for one slot would leave Steam's choice undefined and
+  let the next run report the stale one as "kept".
+- **A transient failure is never cached as a miss.** A 5xx, a timeout, a
+  dropped connection or a 429 that exhausted its retries leaves no negative
+  entry; only "the source genuinely has no image for this slot" starts the
+  7-day window. That holds for a failed *title* lookup too:
+  `MatchCache.record_missing_slot` refuses to invent an entry for a title
+  that never resolved, so the slot loop cannot cache a miss through the back
+  door.
+- **Every network failure is an `HttpError`, including one halfway through a
+  response body.** A connection that dies while a download is streaming used
+  to escape as a bare `OSError` past every handler; `Fetcher` now translates
+  it into `NetworkError` and counts it toward the same five-in-a-row hard
+  stop, so a flaky link costs a slot (or, five times over, exits 4) instead
+  of a traceback.
 
 ## Testing
 

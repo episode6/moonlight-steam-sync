@@ -167,6 +167,10 @@ def cmd_art(
 
     for line in summary.lines():
         print(line, file=out)
+    if summary.stop_reason == "interrupted":
+        # run_art catches the Ctrl-C around each title, so this -- not the
+        # handler above -- is the branch a real SIGINT takes (spec 3.9.5).
+        print("interrupted; resume with the same command", file=err)
     return _exit_code(summary)
 
 

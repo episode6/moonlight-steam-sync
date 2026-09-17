@@ -20,6 +20,7 @@ from moonlight_steam_sync.art.apply import (
     run_art,
     slot_report,
 )
+from moonlight_steam_sync.art.http import NetworkError
 from moonlight_steam_sync.art.resolve import MatchCache, Resolver
 from moonlight_steam_sync.art.select import Selector
 from moonlight_steam_sync.art.sgdb import SgdbClient
@@ -251,7 +252,7 @@ def test_an_existing_slot_file_is_never_redownloaded(tmp_path, grid_dir):
     assert not any("library_600x900" in call for call in transport.calls)
 
 
-def test_force_redownloads_even_an_existing_slot(tmp_path, grid_dir):
+def test_force_redownloads_and_replaces_an_existing_slot(tmp_path, grid_dir):
     appid = APPIDS["Elden Ring"]
     (grid_dir / f"{appid}p.png").write_bytes(b"\x89PNG\r\n\x1a\nold")
     resolver, selector, transport, _ = build(tmp_path, force=True)
@@ -259,9 +260,15 @@ def test_force_redownloads_even_an_existing_slot(tmp_path, grid_dir):
         targets(grid_dir, names=["Elden Ring"])[0], resolver, selector, force=True
     )
     assert result.slots["portrait"].source == "official"
-    # The new file is a .jpg from the CDN; the stale .png is left alone, which
-    # is why `--force` is documented as "re-fetch", not "clean".
+    # The new file is a .jpg from the CDN, and the stale .png goes with it:
+    # otherwise the very next non-force run would call the .png "kept" and
+    # quietly undo the --force.
     assert (grid_dir / f"{appid}p.jpg").is_file()
+    assert not (grid_dir / f"{appid}p.png").exists()
+
+    resolver2, selector2, transport2, _ = build(tmp_path)
+    again = apply_title(targets(grid_dir, names=["Elden Ring"])[0], resolver2, selector2)
+    assert again.slots["portrait"].path == grid_dir / f"{appid}p.jpg"
 
 
 def test_a_cached_slot_miss_is_not_requeried_but_retry_missing_reopens_it(
@@ -282,17 +289,71 @@ def test_a_cached_slot_miss_is_not_requeried_but_retry_missing_reopens_it(
 
 def test_an_interrupted_download_leaves_a_part_and_the_rerun_completes(tmp_path, grid_dir):
     url = "https://cdn.cloudflare.steamstatic.com/steam/apps/1245620/library_600x900_2x.jpg"
-    resolver, selector, _, _ = build(tmp_path, FakeTransport(truncate_after={url: 1}))
+    appid = APPIDS["Elden Ring"]
+    resolver, selector, _, cache = build(tmp_path, FakeTransport(truncate_after={url: 1}))
     entry = targets(grid_dir, names=["Elden Ring"])[0]
-    with pytest.raises(ConnectionResetError):
-        apply_title(entry, resolver, selector)
-    assert names_on_disk(grid_dir) == [f"{APPIDS['Elden Ring']}p.part"]
+    result = apply_title(entry, resolver, selector)
+
+    # The dropped connection costs that one slot and nothing else: no crash,
+    # the half-written bytes stay in the .part, and because the failure was
+    # transient the slot is not cached as a miss.
+    assert result.slots["portrait"].source == "missing"
+    assert f"{appid}p.part" in names_on_disk(grid_dir)
+    assert f"{appid}p.jpg" not in names_on_disk(grid_dir)
+    assert cache.slot_is_known_missing("Elden Ring", "portrait") is False
+    assert result.slots["hero"].source == "official"
 
     resolver2, selector2, _, _ = build(tmp_path)
     result = apply_title(entry, resolver2, selector2)
     assert result.slots["portrait"].source == "official"
-    assert f"{APPIDS['Elden Ring']}p.jpg" in names_on_disk(grid_dir)
-    assert f"{APPIDS['Elden Ring']}p.part" not in names_on_disk(grid_dir)
+    assert f"{appid}p.jpg" in names_on_disk(grid_dir)
+    assert f"{appid}p.part" not in names_on_disk(grid_dir)
+
+
+def test_a_transient_title_lookup_failure_is_never_cached_as_a_miss(tmp_path, grid_dir):
+    """Spec 6.10: the 7-day negative window is for a genuine no-match only.
+
+    The resolver refuses to cache a transient failure, and the slot loop must
+    not put the entry back through the side door: every slot comes up empty
+    because there was nothing to try, which is not the same as "no source has
+    this image".
+    """
+    url = "https://www.steamgriddb.com/api/v2/search/autocomplete/Elden%20Ring"
+    transport = FakeTransport(fail_with={url: NetworkError("down")})
+    fetcher = make_fetcher(transport)
+    sgdb = SgdbClient(api_key="fixture-key", fetcher=fetcher)
+    cache = MatchCache(tmp_path / "matches.json")
+    resolver = Resolver(cache=cache, sgdb=sgdb, store=None)
+    selector = Selector(fetcher=fetcher, sgdb=sgdb, store=None)
+
+    entry = targets(grid_dir, names=["Elden Ring"])[0]
+    result = apply_title(entry, resolver, selector)
+    assert set(sources(result).values()) == {"missing"}
+    assert "Elden Ring" not in cache
+    assert not (tmp_path / "matches.json").exists()
+
+    # The next healthy run searches again instead of trusting a negative it
+    # never should have written.
+    resolver2, selector2, transport2, _ = build(tmp_path)
+    result = apply_title(entry, resolver2, selector2)
+    assert set(sources(result).values()) == {"official"}
+    assert any("autocomplete" in call for call in transport2.calls)
+
+
+def test_a_transient_slot_failure_leaves_the_slot_open_for_the_next_run(tmp_path, grid_dir):
+    """The same rule one level down: the title resolved, a *slot* lookup did not."""
+    url = "https://cdn.cloudflare.steamstatic.com/steam/apps/1245620/library_600x900_2x.jpg"
+    resolver, selector, _, cache = build(
+        tmp_path, FakeTransport(fail_with={url: NetworkError("down")})
+    )
+    entry = targets(grid_dir, names=["Elden Ring"])[0]
+    result = apply_title(entry, resolver, selector)
+    assert result.slots["portrait"].source == "missing"
+    assert cache.slot_is_known_missing("Elden Ring", "portrait") is False
+
+    resolver2, selector2, transport2, _ = build(tmp_path)
+    result = apply_title(entry, resolver2, selector2)
+    assert result.slots["portrait"].source == "official"
 
 
 def test_webp_is_never_requested_or_written_anywhere_in_a_full_run(

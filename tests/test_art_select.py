@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from moonlight_steam_sync.art.http import NetworkError
 from moonlight_steam_sync.art.resolve import Match
 from moonlight_steam_sync.art.select import (
     HERO,
@@ -22,6 +23,8 @@ from moonlight_steam_sync.art.steamstore import SteamStoreClient
 from tests.art_fixtures import FIXTURE_DIR, FakeTransport, make_fetcher
 
 APPID = 2864321987
+
+PORTRAIT_2X = "https://cdn.cloudflare.steamstatic.com/steam/apps/1245620/library_600x900_2x.jpg"
 
 
 def make_selector(transport: FakeTransport | None = None, **kwargs):
@@ -134,16 +137,34 @@ def test_requesting_webp_from_the_client_is_a_programming_error() -> None:
 
 
 def test_an_exception_mid_download_leaves_only_a_part_file(tmp_path) -> None:
-    transport = FakeTransport(
-        truncate_after={
-            "https://cdn.cloudflare.steamstatic.com/steam/apps/1245620/library_600x900_2x.jpg": 1
-        }
-    )
-    selector, _ = make_selector(transport)
-    match = Match(name="Elden Ring", steam_appid=1245620)
-    with pytest.raises(ConnectionResetError):
-        selector.fill(PORTRAIT, match, appid=APPID, grid_dir=tmp_path)
+    selector, _ = make_selector(FakeTransport(truncate_after={PORTRAIT_2X: 1}))
+    # A connection that dies mid-body is a structured NetworkError, not the
+    # bare OSError that used to walk past every handler in the stack.
+    with pytest.raises(NetworkError):
+        selector.download(PORTRAIT_2X, tmp_path / f"{APPID}p")
     assert sorted(p.name for p in tmp_path.iterdir()) == [f"{APPID}p.part"]
+
+
+def test_a_mid_download_drop_is_a_failed_attempt_not_a_crash(tmp_path) -> None:
+    selector, _ = make_selector(FakeTransport(truncate_after={PORTRAIT_2X: 1}))
+    match = Match(name="Elden Ring", steam_appid=1245620)
+    # fill() survives it, flags the attempt as failed (so the slot is never
+    # cached as a genuine miss) and falls through to the next source.
+    assert selector.fill(PORTRAIT, match, appid=APPID, grid_dir=tmp_path) is None
+    assert selector.last_attempt_failed is True
+    assert sorted(p.name for p in tmp_path.iterdir()) == [f"{APPID}p.part"]
+
+
+def test_force_replaces_a_slot_file_that_has_a_different_extension(tmp_path) -> None:
+    stale = tmp_path / f"{APPID}p.png"
+    stale.write_bytes(b"\x89PNG\r\n\x1a\nold")
+    selector, _ = make_selector()
+    match = Match(name="Elden Ring", steam_appid=1245620)
+    fill = selector.fill(PORTRAIT, match, appid=APPID, grid_dir=tmp_path)
+    assert fill.path.name == f"{APPID}p.jpg"
+    # One file per slot: the old .png is gone, so Steam has no choice to make
+    # and the next run cannot report the stale file as "kept".
+    assert sorted(p.name for p in tmp_path.iterdir()) == [f"{APPID}p.jpg"]
 
 
 def test_a_stale_part_is_overwritten_by_the_next_run(tmp_path) -> None:

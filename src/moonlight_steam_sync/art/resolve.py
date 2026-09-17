@@ -201,11 +201,17 @@ class MatchCache:
         self.flush()
 
     def record_missing_slot(self, name: str, slot: str, when: datetime | None = None) -> None:
-        """Remember that ``slot`` found nothing, subject to the same 7-day rule."""
+        """Remember that ``slot`` found nothing, subject to the same 7-day rule.
+
+        A title with no entry yet is a title whose own lookup never
+        succeeded, and a failed lookup is never cached (spec 6.10): creating
+        an entry here would start a 7-day negative window off the back of a
+        SteamGridDB 5xx or a timeout. So this is a no-op until
+        :meth:`put` has recorded a resolution for ``name``.
+        """
         entry = self._entries.get(name)
         if entry is None:
-            entry = Match(name=name)
-            self._entries[name] = entry
+            return
         entry.missing_slots[slot] = _iso(when or _now())
         self._dirty = True
 
@@ -298,8 +304,13 @@ class Resolver:
             steam_appid = _as_int(override.get("steam"))
             sgdb_id = _as_int(override.get("sgdb"))
             explain.append(f"override: steam={steam_appid} sgdb={sgdb_id}")
-            if sgdb_id is not None and steam_appid is None and self._sgdb_usable():
-                steam_appid = self._steam_appid_for(sgdb_id, explain)
+            if sgdb_id is not None and steam_appid is None:
+                pinned = self._cached_override(name, sgdb_id)
+                if pinned is not None:
+                    steam_appid = pinned
+                    explain.append(f"cache: steam appid {pinned} for the pinned sgdb id")
+                elif self._sgdb_usable():
+                    steam_appid = self._steam_appid_for(sgdb_id, explain)
             match = Match(
                 name=name,
                 steam_appid=steam_appid,
@@ -328,6 +339,21 @@ class Resolver:
     def _override(self, name: str) -> Mapping[str, Any] | None:
         value = self.overrides.get(name)
         return value if isinstance(value, Mapping) else None
+
+    def _cached_override(self, name: str, sgdb_id: int) -> int | None:
+        """The Steam appid a previous run already looked up for this pin.
+
+        An ``[overrides] sgdb = N`` pin otherwise costs one
+        ``games/id/N?platformdata=steam`` call *per run*, against spec 3.9's
+        "a second pass does only the remaining work". Only a cached entry
+        written by the same pin counts, so editing the pin re-queries.
+        """
+        if self.force:
+            return None
+        cached = self.cache.get(name)
+        if cached is None or cached.how != "override" or cached.sgdb_id != sgdb_id:
+            return None
+        return cached.steam_appid
 
     def _negative_still_valid(self, cached: Match) -> bool:
         if self.retry_missing:
