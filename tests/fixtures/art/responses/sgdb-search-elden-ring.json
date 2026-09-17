@@ -1,0 +1,44 @@
+{
+  "_TODO": "SYNTHETIC FIXTURE -- invented, not captured. Replace with a real capture: SGDB_API_KEY=... python3 scripts/record_fixtures.py",
+  "success": true,
+  "data": [
+    {
+      "id": 9999,
+      "name": "Elden Ring Nightreign",
+      "types": [
+        "steam"
+      ],
+      "verified": false,
+      "release_date": 1600000000,
+      "external_platform_data": {
+        "steam": [
+          {
+            "id": "2622380",
+            "metadata": {
+              "clienticon": "deadbeef"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": 5297,
+      "name": "Elden Ring",
+      "types": [
+        "steam"
+      ],
+      "verified": true,
+      "release_date": 1600000000,
+      "external_platform_data": {
+        "steam": [
+          {
+            "id": "1245620",
+            "metadata": {
+              "clienticon": "deadbeef"
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

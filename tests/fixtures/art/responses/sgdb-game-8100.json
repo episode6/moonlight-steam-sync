@@ -1,0 +1,23 @@
+{
+  "_TODO": "SYNTHETIC FIXTURE -- invented, not captured. Replace with a real capture: SGDB_API_KEY=... python3 scripts/record_fixtures.py",
+  "success": true,
+  "data": {
+    "id": 8100,
+    "name": "Old Console Classic",
+    "types": [
+      "steam"
+    ],
+    "verified": true,
+    "release_date": 1600000000,
+    "external_platform_data": {
+      "steam": [
+        {
+          "id": "400910",
+          "metadata": {
+            "clienticon": "deadbeef"
+          }
+        }
+      ]
+    }
+  }
+}

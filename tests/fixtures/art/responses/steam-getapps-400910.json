@@ -1,0 +1,12 @@
+{
+  "_TODO": "SYNTHETIC FIXTURE -- invented, not captured. Replace with a real capture: SGDB_API_KEY=... python3 scripts/record_fixtures.py",
+  "response": {
+    "apps": [
+      {
+        "appid": 400910,
+        "name": "Old Console Classic",
+        "icon": "3e3e3e3e"
+      }
+    ]
+  }
+}

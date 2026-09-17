@@ -1,0 +1,44 @@
+{
+  "_TODO": "SYNTHETIC FIXTURE -- invented, not captured. Replace with a real capture: SGDB_API_KEY=... python3 scripts/record_fixtures.py",
+  "success": true,
+  "data": [
+    {
+      "id": 101,
+      "score": 42,
+      "style": "alternate",
+      "width": 600,
+      "height": 900,
+      "mime": "image/png",
+      "nsfw": false,
+      "humor": false,
+      "epilepsy": false,
+      "language": "en",
+      "url": "https://cdn2.steamgriddb.com/file/sgdb-cdn/grid/full/fan-portrait-low.png",
+      "thumb": "https://cdn2.steamgriddb.com/file/sgdb-cdn/grid/thumb/fan-portrait-low.png",
+      "upvotes": 42,
+      "downvotes": 0,
+      "author": {
+        "name": "synthetic-uploader"
+      }
+    },
+    {
+      "id": 102,
+      "score": 97,
+      "style": "alternate",
+      "width": 600,
+      "height": 900,
+      "mime": "image/png",
+      "nsfw": false,
+      "humor": false,
+      "epilepsy": false,
+      "language": "en",
+      "url": "https://cdn2.steamgriddb.com/file/sgdb-cdn/grid/full/fan-portrait-best.png",
+      "thumb": "https://cdn2.steamgriddb.com/file/sgdb-cdn/grid/thumb/fan-portrait-best.png",
+      "upvotes": 97,
+      "downvotes": 0,
+      "author": {
+        "name": "synthetic-uploader"
+      }
+    }
+  ]
+}
