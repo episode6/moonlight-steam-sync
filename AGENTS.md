@@ -59,14 +59,33 @@ moonlight_steam_sync/
   sync.py          the orchestration: list -> diff -> art -> write -> restart; progress lines
 ```
 
-Only `__main__.py` and `config.py` are implemented so far (PR-1). Every other
-subcommand in `__main__.py` is a stub that exits 1 with "not implemented"
-until the PR that implements its module lands (`vdf.py`/`shortcuts.py` in
-PR-2, `moonlight.py`/`steam.py` in PR-3, `art/` in PR-4, `sync.py`
-orchestration + the resumability e2e test in PR-5, `remove`/`status`/`list`
-polish in PR-6). Do not add code to a module ahead of its PR without checking
-the work plan first -- the modules are split the way they are so independent
-PRs can land in parallel.
+`__main__.py` and `config.py` landed in PR-1; `vdf.py`, `shortcuts.py` and
+`steam.py` (the whole Steam side) in PR-2. Every subcommand in `__main__.py`
+except `doctor` is still a stub that exits 1 with "not implemented" until the
+PR that implements the rest of its chain lands (`moonlight.py` in PR-3,
+`art/` in PR-4, `sync.py` orchestration + the resumability e2e test in PR-5,
+`remove`/`status`/`list` polish in PR-6). Do not add code to a module ahead
+of its PR without checking the work plan first -- the modules are split the
+way they are so independent PRs can land in parallel.
+
+### Working on the Steam side (`vdf.py`, `shortcuts.py`, `steam.py`)
+
+- **`dumps(loads(x)) == x`, byte for byte, is the invariant.** Steam deletes
+  a `shortcuts.vdf` it cannot parse, so anything that loses a field, a key's
+  original spelling, an integer's width or a non-UTF-8 name is a bug even if
+  it "works". `vdf.py` therefore rejects duplicate keys and trailing bytes
+  rather than papering over them, and `Shortcut` preserves unknown fields and
+  the key order it read.
+- **`Shortcut.exe` / `.start_dir` hold the value *as stored*, quotes and
+  all**, because the appid is `crc32(quoted Exe + AppName) | 0x80000000`.
+  Use `Shortcut.create()` to build one from a bare path and
+  `.exe_path`/`.start_dir_path` to read one back.
+- **Never shell out to Steam directly.** `steam.ProcessRunner` is the seam;
+  tests inject a fake. `$STEAM_ROOT` overrides root discovery, which is how
+  tests (and anyone with an unusual install) point the tool at another tree.
+- **`ShortcutsFile.write()` writes nothing when the bytes are unchanged** and
+  is the only non-incremental step in a run (contract item 4 below). It
+  rotates five timestamped backups and `os.replace`s a temp file into place.
 
 ## The resumability contract (spec 3.9)
 
@@ -130,12 +149,8 @@ API key for `scripts/record_fixtures.py`) exist in this repo yet, and PR-1
 does not need them -- `config.py` has no external format to fixture against.
 Starting with the PR that needs each one:
 
-- **`shortcuts.vdf`** (PR-2, `vdf.py`/`shortcuts.py`): synthetic binary
-  fixtures built by hand from the field order and type bytes in spec 2.1,
-  cross-checked against `ValvePython/vdf` (dev dependency, test oracle only).
-  TODO: replace with a real, sanitised (host names / paths scrubbed)
-  `shortcuts.vdf` pulled from a device via `moonlight-steam-sync doctor`'s
-  reported Steam directory, once available.
+- **`shortcuts.vdf`** (PR-2, `vdf.py`/`shortcuts.py`): `tests/fixtures/shortcuts_synthetic.vdf`, a three-entry binary store built by hand from the field order, type bytes and quoting in spec 2.1 by `tests/fixtures/build_synthetic_shortcuts.py` (raw `struct`/byte literals, deliberately not using `vdf.py`, so the fixture is not produced by the code it tests). Cross-checked against `ValvePython/vdf` (dev dependency, test oracle only). **TODO:** replace with a real, sanitised `shortcuts.vdf` from a device -- `moonlight-steam-sync doctor` prints its exact path on the `steam user:` line; shut Steam down before copying it, scrub home paths to `/home/deck/...` and host names to `MY-GAMING-PC`, save it as `tests/fixtures/shortcuts_real.vdf`, and delete the one `pytest.skip` in `tests/conftest.py`'s `real_shortcuts_vdf` fixture. Nothing else changes; the tests already read whichever file exists.
+- **`loginusers.vdf`** (PR-2, `steam.py`): `tests/fixtures/loginusers_synthetic.vdf`, text KeyValues shaped from spec 3.4 (a `users` block keyed by steam64, exactly one `MostRecent "1"`). **TODO:** replace with a sanitised real capture from `<steam root>/config/loginusers.vdf` -- invent steam64 ids that stay consistent with the `userdata/<steamid3>` directory names and blank out `AccountName`/`PersonaName`. Drop it in as `loginusers_real.vdf`; the tests prefer it automatically.
 - **`moonlight list --csv` output** (PR-3, `moonlight.py`): a synthetic CSV
   built from the header and row shape in spec 2.1
   (`Name, ID, HDR Support, App Collection Game, Hidden, Direct Launch, Boxart URL`).
@@ -151,6 +166,10 @@ Starting with the PR that needs each one:
 Every synthetic fixture, wherever it lands, must carry a comment or file
 naming exactly what real capture should replace it and how to get it -- copy
 the wording pattern above rather than a bare "TODO: replace me".
+`tests/fixtures/README.md` is the same list from the fixture directory's
+point of view; keep the two in step. Tests must ask for a fixture *by role*
+(see the helpers in `tests/conftest.py`) so that swapping a synthetic file
+for a real capture is a file drop, never a test rewrite.
 
 ## Device checklist
 
