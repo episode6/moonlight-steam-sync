@@ -152,7 +152,6 @@ def _list_host_or_report(
     except (
         moonlight.MoonlightNotFoundError,
         moonlight.MoonlightUnreachableError,
-        moonlight.MoonlightCsvFormatError,
     ) as exc:
         print(f"{command}: {exc}", file=err)
         return None
