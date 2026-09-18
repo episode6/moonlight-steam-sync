@@ -6,6 +6,13 @@ project uses [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.2.0] - 2026-09-18
+
+Stops the host app listing from crashing a large Apollo host. Minor bump
+rather than patch because two host-list behaviours are removed with it.
+
 ### Changed
 
 - The host's app list is now read with the plain `moonlight list <host>`
