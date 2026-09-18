@@ -6,7 +6,17 @@ project uses [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
-Nothing yet.
+### Changed
+
+- `install.sh` now adds `~/.local/bin` to `PATH` itself when it is missing,
+  by appending an `export PATH=...` line to `~/.bashrc` (or `~/.zshrc` under
+  zsh) once, instead of only printing a hint. A fresh SteamOS install does
+  not have that directory on `PATH`, so the previous behaviour left
+  `moonlight-steam-sync` installed but not found. `NO_MODIFY_PATH=1`
+  restores the print-only behaviour.
+- CI and the release smoke test now run on Python 3.11 (the floor) and
+  exactly 3.13.5 (what a stock SteamOS ships, verified on device) instead
+  of the loose 3.11/3.12/3.13 spread.
 
 ## [0.1.0] - 2026-09-17
 

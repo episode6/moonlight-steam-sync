@@ -5,9 +5,16 @@
 # published sha256 checksum, verifies it, and installs it as
 # ~/.local/bin/moonlight-steam-sync. That is the entire install on SteamOS:
 # no root, no pip, no compiler -- just curl and a Python 3.11+ already on
-# PATH (stock SteamOS 3.x ships one; see README.md and AGENTS.md).
+# PATH (stock SteamOS 3.x ships one -- currently 3.13.5; see
+# README.md and AGENTS.md).
 #
 #   curl -fsSL https://raw.githubusercontent.com/episode6/moonlight-steam-sync/main/install.sh | sh
+#
+# A fresh SteamOS install does not have ~/.local/bin on PATH, so when the
+# install directory is missing from PATH this script also appends an
+# `export PATH=...` line to the shell's rc file (~/.bashrc, or ~/.zshrc for
+# zsh) -- once; re-runs find the line already there. Set NO_MODIFY_PATH=1
+# to skip that and only print the line instead.
 #
 # Safe to re-run: it always fetches the latest tag and overwrites the
 # previous install (there is no version check, so it re-downloads and
@@ -80,13 +87,41 @@ mv -f "${INSTALL_DIR}/${BIN_NAME}.new" "${INSTALL_DIR}/${BIN_NAME}"
 
 echo "Installed ${BIN_NAME} to ${INSTALL_DIR}/${BIN_NAME}"
 
+# Write the rc line with a literal $HOME when installing to the default
+# directory, so the rc file stays correct if the home directory ever moves.
+if [ "$INSTALL_DIR" = "$HOME/.local/bin" ]; then
+    PATH_LINE='export PATH="$HOME/.local/bin:$PATH"'
+else
+    PATH_LINE="export PATH=\"${INSTALL_DIR}:\$PATH\""
+fi
+
+case "$(basename "${SHELL:-sh}")" in
+    zsh) RC_FILE="$HOME/.zshrc" ;;
+    # bash is the SteamOS default, and a sensible guess for anything else;
+    # ~/.bash_profile on Arch-derived systems (SteamOS included) sources
+    # ~/.bashrc, so login shells pick the line up too.
+    *) RC_FILE="$HOME/.bashrc" ;;
+esac
+
 case ":$PATH:" in
     *":${INSTALL_DIR}:"*) ;;
     *)
         echo
-        echo "${INSTALL_DIR} is not on your PATH. Add this to your shell's rc file:"
-        echo
-        echo "    export PATH=\"${INSTALL_DIR}:\$PATH\""
+        if [ "${NO_MODIFY_PATH:-0}" != "0" ]; then
+            echo "${INSTALL_DIR} is not on your PATH (NO_MODIFY_PATH is set). Add this to your shell's rc file:"
+            echo
+            echo "    ${PATH_LINE}"
+        elif [ -f "$RC_FILE" ] && grep -qxF "$PATH_LINE" "$RC_FILE"; then
+            echo "${INSTALL_DIR} is not on your PATH yet, but ${RC_FILE} already adds it."
+            echo "Open a new shell, or run:  ${PATH_LINE}"
+        else
+            printf '\n# Added by moonlight-steam-sync install.sh\n%s\n' "$PATH_LINE" >> "$RC_FILE"
+            echo "${INSTALL_DIR} was not on your PATH; added this line to ${RC_FILE}:"
+            echo
+            echo "    ${PATH_LINE}"
+            echo
+            echo "Open a new shell, or run that line now, for '${BIN_NAME}' to be found."
+        fi
         echo
         ;;
 esac
