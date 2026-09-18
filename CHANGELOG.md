@@ -6,6 +6,12 @@ project uses [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.1.1] - 2026-09-18
+
+The first findings from installing on a fresh SteamOS box.
+
 ### Changed
 
 - `install.sh` now adds `~/.local/bin` to `PATH` itself when it is missing,
