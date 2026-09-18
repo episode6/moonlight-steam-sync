@@ -152,7 +152,6 @@ def _list_host_or_report(
     except (
         moonlight.MoonlightNotFoundError,
         moonlight.MoonlightUnreachableError,
-        moonlight.MoonlightCsvFormatError,
     ) as exc:
         print(f"{command}: {exc}", file=err)
         return None
@@ -287,30 +286,14 @@ def new_shortcut(config: Config, name: str) -> Shortcut:
     )
 
 
-def _boxart(app: moonlight.App | None) -> Path | None:
-    if app is None or not app.boxart_path:
-        return None
-    return Path(app.boxart_path)
-
-
 def art_targets(plan: Plan, grid_dir: Path) -> list[ArtTarget]:
     """Every adopted and every planned shortcut, adopted first (spec 3.6)."""
     targets = [
-        ArtTarget(
-            name=item.name,
-            appid=item.shortcut.appid,
-            grid_dir=grid_dir,
-            boxart_path=_boxart(item.app),
-        )
+        ArtTarget(name=item.name, appid=item.shortcut.appid, grid_dir=grid_dir)
         for item in plan.adopted
     ]
     targets.extend(
-        ArtTarget(
-            name=item.app.name,
-            appid=item.shortcut.appid,
-            grid_dir=grid_dir,
-            boxart_path=_boxart(item.app),
-        )
+        ArtTarget(name=item.app.name, appid=item.shortcut.appid, grid_dir=grid_dir)
         for item in plan.to_add
     )
     return targets
@@ -678,16 +661,10 @@ def _dry_run(plan: Plan, library: Library, services: ArtServices | None, out: Te
     try:
         for item in plan.adopted:
             print(f"  adopted  {item.name} [{item.shortcut.appid}]", file=out)
-            slot_plan(
-                ArtTarget(item.name, item.shortcut.appid, library.grid_dir, _boxart(item.app))
-            )
+            slot_plan(ArtTarget(item.name, item.shortcut.appid, library.grid_dir))
         for item in plan.to_add:
             print(f"  add      {item.app.name} [{item.shortcut.appid}]", file=out)
-            slot_plan(
-                ArtTarget(
-                    item.app.name, item.shortcut.appid, library.grid_dir, _boxart(item.app)
-                )
-            )
+            slot_plan(ArtTarget(item.app.name, item.shortcut.appid, library.grid_dir))
         for item in plan.pending:
             print(f"  pending  {item.app.name} (beyond --limit {plan.limit})", file=out)
         for app in plan.ignored:
@@ -712,7 +689,7 @@ def _print_slot_plan(
         if existing is not None:
             print(f"           {slot.key}: kept {existing.name}", file=out)
             continue
-        first = next(iter(selector.candidates(slot, match, target.boxart_path)), None)
+        first = next(iter(selector.candidates(slot, match)), None)
         where = first.describe() if first is not None else "no source"
         print(f"           {slot.key}: {where}", file=out)
 

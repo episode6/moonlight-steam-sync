@@ -9,40 +9,18 @@ beyond that flatpak fallback.
 
 from __future__ import annotations
 
-import csv
-import io
 import os
 import shlex
 import shutil
 import subprocess
-import urllib.parse
-import urllib.request
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-#: `moonlight list --csv` can block while box art downloads on a first run
-#: (spec 2.3's "[verify]" note), and moonlight-qt's own connect timeout
-#: (`COMPUTER_SEEK_TIMEOUT`, app/cli/listapps.cpp) is 30s, so a 30s budget
-#: here usually races moonlight's own "Failed to connect" and loses, and
-#: leaves no room for `getAppList()` on a 500-title host either. Generous
-#: rather than tight.
+#: moonlight-qt's own connect timeout (`COMPUTER_SEEK_TIMEOUT`,
+#: app/cli/listapps.cpp) is 30s, so a 30s budget here usually races
+#: moonlight's own "Failed to connect" and loses, and leaves no room for
+#: `getAppList()` on a 500-title host either. Generous rather than tight.
 LIST_TIMEOUT_S = 60.0
-
-#: moonlight-qt's `--csv` header, verbatim (app/cli/listapps.cpp's
-#: `printAppsCSV`): fields are separated by ``", "`` (comma-space), so every
-#: field but the first carries a leading space in the raw text. We parse
-#: with ``skipinitialspace=True`` so ``csv`` strips that leading space from
-#: both the header and every data cell, and these are the field names it
-#: leaves us with.
-_EXPECTED_FIELDNAMES = (
-    "Name",
-    "ID",
-    "HDR Support",
-    "App Collection Game",
-    "Hidden",
-    "Direct Launch",
-    "Boxart URL",
-)
 
 #: The flatpak's application id (spec 2.3).
 FLATPAK_APP_ID = "com.moonlight_stream.Moonlight"
@@ -57,18 +35,11 @@ class MoonlightUnreachableError(RuntimeError):
     (spec 3.3 exit code 3)."""
 
 
-class MoonlightCsvFormatError(RuntimeError):
-    """`moonlight list --csv` output did not have the expected header."""
-
-
 @dataclass(frozen=True)
 class App:
-    """One row of `moonlight list --csv`, after filtering (spec 3.4)."""
+    """One line of `moonlight list <host>` (spec 3.4)."""
 
     name: str
-    id: str
-    hidden: bool
-    boxart_path: str | None
 
 
 def find_binary() -> list[str] | None:
@@ -104,81 +75,27 @@ def find_binary() -> list[str] | None:
     return None
 
 
-def _parse_bool(value: str) -> bool:
-    """moonlight-qt's CSV boolean spelling is not documented (spec 2.3); this
-    accepts the common spellings a Qt CLI could plausibly emit
-    (``true``/``1``/``yes``, case-insensitive) and treats everything else,
-    including an empty cell, as false."""
-    return value.strip().lower() in ("true", "1", "yes")
-
-
-def _parse_boxart(value: str) -> str | None:
-    """A `file://` URL becomes a plain filesystem path; ``qrc:/res/no_app_image.png``
-    (not cached yet, spec 2.3) or anything else becomes ``None``.
-
-    The value is ``QUrl::fromLocalFile(...).toDisplayString()`` (moonlight-qt's
-    `app/backend/boxartmanager.cpp` + `listapps.cpp`), which percent-encodes
-    the path -- the real cache path always contains spaces
-    (``.../boxart/<uuid>/<id>.png`` under ``Moonlight Game Streaming
-    Project/Moonlight``) -- so this percent-decodes the URL's path component
-    rather than just stripping the scheme.
+def _parse_list(text: str) -> list[App]:
+    """Parse plain `moonlight list <host>` output: one app name per line
+    (moonlight-qt's `app/cli/listapps.cpp` prints ``"%s\\n"`` per app and
+    nothing else on stdout). Blank lines are skipped; names are kept verbatim
+    otherwise, since the name is what `moonlight stream` is later given.
     """
-    value = value.strip()
-    if not value.startswith("file://"):
-        return None
-    return urllib.request.url2pathname(urllib.parse.urlsplit(value).path)
-
-
-def _parse_csv(text: str) -> list[App]:
-    """Parse `moonlight list --csv` output into :class:`App` rows.
-
-    moonlight-qt's `--csv` header separates fields with ``", "``
-    (`app/cli/listapps.cpp`'s `printAppsCSV`), so every field but the first
-    carries a leading space; ``skipinitialspace=True`` strips it from both
-    the header and every data cell, and the header is validated once against
-    the exact upstream spelling so a format change fails loudly instead of
-    silently returning empty strings for every column but ``Name``.
-
-    Rows flagged ``App Collection Game`` (a Steam-collection placeholder, not
-    a streamable app) or ``Hidden`` are dropped entirely rather than returned
-    with a flag set, per the PR-3 brief ("Hidden/App Collection Game flags ->
-    skipped"); see the PR description's "Notes for review" for the
-    alternative reading this rules out.
-    """
-    reader = csv.DictReader(io.StringIO(text), skipinitialspace=True)
-    fieldnames = tuple(reader.fieldnames or ())
-    if fieldnames != _EXPECTED_FIELDNAMES:
-        missing = set(_EXPECTED_FIELDNAMES) - set(fieldnames)
-        if missing:
-            raise MoonlightCsvFormatError(
-                f"moonlight list --csv: missing column(s) {sorted(missing)!r} "
-                f"(got header {fieldnames!r})"
-            )
-        # Extra/reordered columns from a newer moonlight-qt: tolerate it,
-        # DictReader still looks fields up by name.
-
-    apps: list[App] = []
-    for row in reader:
-        if _parse_bool(row.get("App Collection Game", "")):
-            continue
-        hidden = _parse_bool(row.get("Hidden", ""))
-        if hidden:
-            continue
-        apps.append(
-            App(
-                name=row["Name"],
-                id=row["ID"],
-                hidden=hidden,
-                boxart_path=_parse_boxart(row.get("Boxart URL", "")),
-            )
-        )
-    return apps
+    return [App(name=line) for line in text.splitlines() if line.strip()]
 
 
 def list_apps(host: str, *, timeout: float = LIST_TIMEOUT_S) -> list[App]:
-    """Run `moonlight list <host> --csv` and return the visible, streamable
-    apps (spec 3.4's `list(host)`; named `list_apps` here to avoid shadowing
-    the builtin).
+    """Run `moonlight list <host>` and return its apps (spec 3.4's
+    `list(host)`; named `list_apps` here to avoid shadowing the builtin).
+
+    Deliberately the *plain* form, not ``--csv``: moonlight-qt's CSV mode
+    calls ``loadBoxArt()`` for every app before printing, which fires one
+    box-art fetch per title at the host in a burst. On a large library that
+    burst has crashed an Apollo host outright; the plain form only asks for
+    the app list. The price is that the CSV-only columns are gone: no
+    per-app id, no ``Hidden``/``App Collection Game`` flags (an app hidden
+    in the Moonlight client is listed like any other, so ``ignore`` is the
+    way to keep one out), and no cached box-art path.
 
     Raises :class:`MoonlightNotFoundError` when no binary is available, and
     :class:`MoonlightUnreachableError` when the binary runs but the host does
@@ -191,7 +108,7 @@ def list_apps(host: str, *, timeout: float = LIST_TIMEOUT_S) -> list[App]:
             "moonlight CLI not found (native binary, flatpak, or MOONLIGHT_BIN)"
         )
 
-    argv = [*binary, "list", host, "--csv"]
+    argv = [*binary, "list", host]
     try:
         result = subprocess.run(
             argv, capture_output=True, text=True, timeout=timeout, check=False
@@ -209,7 +126,7 @@ def list_apps(host: str, *, timeout: float = LIST_TIMEOUT_S) -> list[App]:
             f"{result.stderr.strip()}"
         )
 
-    return _parse_csv(result.stdout)
+    return _parse_list(result.stdout)
 
 
 def stream(host: str, name: str, extra_args: Sequence[str] = ()) -> None:

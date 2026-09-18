@@ -6,7 +6,23 @@ project uses [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
-Nothing yet.
+### Changed
+
+- The host's app list is now read with the plain `moonlight list <host>`
+  instead of `moonlight list <host> --csv`. moonlight-qt's CSV mode loads
+  box art for every app before it prints, which fires one box-art fetch per
+  title at the host in a burst; on a large library that burst crashed an
+  Apollo host outright. The plain form only asks for the app list.
+
+### Removed
+
+- The Moonlight host's own box art as a last-resort source for the portrait
+  slot: it only ever came from the `--csv` output. A title that neither
+  Steam's CDN nor SteamGridDB has art for now gets an empty portrait slot
+  like any other empty slot.
+- The `Hidden` and `App Collection Game` filtering of the host list, which
+  were `--csv`-only columns too. An app hidden in the Moonlight client now
+  syncs like any other; add it to `ignore` in `config.toml` to keep it out.
 
 ## [0.1.1] - 2026-09-18
 

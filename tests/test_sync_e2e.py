@@ -1,7 +1,7 @@
 """``sync``, ``remove``, ``ignore`` and ``list`` end to end (spec PR-5, 3.6, 3.7, 3.9).
 
 A temporary ``$STEAM_ROOT`` with a real-shaped ``userdata/<id>/config``, a
-fake ``moonlight`` on ``PATH`` that prints a ``list --csv`` capture, a fake
+fake ``moonlight`` on ``PATH`` that prints a ``list <host>`` capture, a fake
 HTTP layer, and a fake Steam process. Nothing here touches the network, a
 real Steam install, or the developer's own config.
 
@@ -11,7 +11,7 @@ The tests the spec names are marked in their docstrings: (a) sync twice,
 
 TODO(real-data): the fixtures underneath are SYNTHETIC -- the 3-entry
 ``shortcuts_synthetic.vdf`` (PR-2), the artwork ``manifest.json`` (PR-4) and
-``moonlight_list_large_synthetic.csv`` (this PR). Each one's README and
+``moonlight_list_large_synthetic.txt`` (this PR). Each one's README and
 generator says how to capture the real thing; every test here asks for its
 fixture by role, so a real capture is a file drop, never a test rewrite.
 """
@@ -36,7 +36,6 @@ from moonlight_steam_sync.config import Config
 from moonlight_steam_sync.shortcuts import ShortcutsFile
 from tests.art_fixtures import (
     CALLS_PER_TITLE,
-    FIXTURE_DIR,
     BulkTransport,
     FakeTransport,
     SimulatedCrash,
@@ -46,11 +45,10 @@ from tests.fakes import (
     STEAMID3,
     STREAM_SH,
     FakeRunner,
-    csv_row,
     fake_moonlight_argv,
     install_fake_moonlight,
     make_steam_root,
-    moonlight_csv,
+    moonlight_list,
     point_steam_root_at,
 )
 
@@ -194,21 +192,8 @@ def fresh_world(tmp_path, monkeypatch) -> World:
     return World(tmp_path, root, make_config(tmp_path), tmp_path / "cache" / "matches.json")
 
 
-@pytest.fixture
-def boxart(tmp_path: Path) -> Path:
-    path = tmp_path / "moonlight-cache" / "boxart" / "abc-host-uuid" / "1.png"
-    path.parent.mkdir(parents=True)
-    path.write_bytes((FIXTURE_DIR / "images" / "tiny.png").read_bytes())
-    return path
-
-
-def host_publishes(tmp_path, monkeypatch, names, *, boxart: dict[str, Path] | None = None):
-    boxart = boxart or {}
-    rows = [
-        csv_row(name, i, boxart=str(boxart[name]) if name in boxart else None)
-        for i, name in enumerate(names, start=1)
-    ]
-    install_fake_moonlight(tmp_path, monkeypatch, moonlight_csv(rows))
+def host_publishes(tmp_path, monkeypatch, names):
+    install_fake_moonlight(tmp_path, monkeypatch, moonlight_list(names))
 
 
 def expected_grid_files(appid: int, *, logo_png: bool = True) -> list[str]:
@@ -228,21 +213,16 @@ def expected_grid_files(appid: int, *, logo_png: bool = True) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-def test_a_sync_twice_second_run_is_a_no_op(world, tmp_path, monkeypatch, boxart):
+def test_a_sync_twice_second_run_is_a_no_op(world, tmp_path, monkeypatch):
     """Spec PR-5 (a): the second run makes zero HTTP calls and no vdf write,
     the backup exists, the file round-trips through the vdf oracle, and the
     grid files have the right names."""
-    host_publishes(
-        tmp_path,
-        monkeypatch,
-        [*MANIFEST_TITLES, "Desktop", "Steam Big Picture"],
-        boxart={"Totally Unknown Title": boxart},
-    )
+    host_publishes(tmp_path, monkeypatch, [*MANIFEST_TITLES, "Desktop", "Steam Big Picture"])
     before = oracle.binary_loads(world.shortcuts_path.read_bytes())
 
     first = world.run(["sync"])
     assert first.code == 0, first.err
-    assert fake_moonlight_argv(tmp_path) == ["list", HOST, "--csv"]
+    assert fake_moonlight_argv(tmp_path) == ["list", HOST]
     assert "7 app(s) published, 2 ignored, 2 already in Steam, 3 to add" in first.out
     # One restart, in the right order: shutdown, then write, then relaunch.
     assert first.runner.shutdowns == 1 and first.runner.relaunches == 1
@@ -278,7 +258,7 @@ def test_a_sync_twice_second_run_is_a_no_op(world, tmp_path, monkeypatch, boxart
     assert all(name in world.grid_files() for name in expected_grid_files(elden.appid))
     assert all(name in world.grid_files() for name in expected_grid_files(hades.appid))
     unknown = world.appid_for("Totally Unknown Title")
-    assert world.grid_files().count(f"{unknown}p.png") == 1  # host box art, portrait only
+    assert not any(n.startswith(str(unknown)) for n in world.grid_files())  # no art at all
     assert not any(n.endswith(".part") for n in world.grid_files())
     # The adopted entry's dangling icon path (a device path that does not
     # exist here) was repointed at the file that now does exist.
@@ -373,12 +353,12 @@ def assert_library_complete(world: World, names: list[str], result: Result) -> N
 
 
 @pytest.fixture
-def large_host(tmp_path, monkeypatch, large_library_csv) -> list[str]:
+def large_host(tmp_path, monkeypatch, large_library_list) -> list[str]:
     """The 500-title host, served by the fake ``moonlight`` (fixture by role)."""
-    install_fake_moonlight(tmp_path, monkeypatch, large_library_csv)
-    from moonlight_steam_sync.moonlight import _parse_csv
+    install_fake_moonlight(tmp_path, monkeypatch, large_library_list)
+    from moonlight_steam_sync.moonlight import _parse_list
 
-    names = [app.name for app in _parse_csv(large_library_csv)]
+    names = [app.name for app in _parse_list(large_library_list)]
     assert len(names) >= 500
     return names
 

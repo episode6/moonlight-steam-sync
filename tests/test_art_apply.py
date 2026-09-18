@@ -25,7 +25,7 @@ from moonlight_steam_sync.art.resolve import MatchCache, Resolver
 from moonlight_steam_sync.art.select import Selector
 from moonlight_steam_sync.art.sgdb import SgdbClient
 from moonlight_steam_sync.art.steamstore import SteamStoreClient
-from tests.art_fixtures import FIXTURE_DIR, FakeTransport, make_fetcher
+from tests.art_fixtures import FakeTransport, make_fetcher
 
 # Shortcut appids: arbitrary here, but in a real run they are
 # crc32(Exe + AppName) | 0x80000000 (spec 2.1) and come from the shortcut
@@ -47,25 +47,9 @@ def grid_dir(tmp_path: Path) -> Path:
     return path
 
 
-@pytest.fixture
-def boxart(tmp_path: Path) -> Path:
-    path = tmp_path / "boxart" / "42.png"
-    path.parent.mkdir(parents=True)
-    path.write_bytes((FIXTURE_DIR / "images" / "tiny.png").read_bytes())
-    return path
-
-
-def targets(grid_dir: Path, boxart: Path | None = None, names=None) -> list[ArtTarget]:
+def targets(grid_dir: Path, names=None) -> list[ArtTarget]:
     names = names or list(APPIDS)
-    return [
-        ArtTarget(
-            name=name,
-            appid=APPIDS[name],
-            grid_dir=grid_dir,
-            boxart_path=boxart if name == "Totally Unknown Title" else None,
-        )
-        for name in names
-    ]
+    return [ArtTarget(name=name, appid=APPIDS[name], grid_dir=grid_dir) for name in names]
 
 
 class FakeShortcuts:
@@ -153,15 +137,11 @@ def test_a_non_steam_game_is_dressed_entirely_from_community_art(tmp_path, grid_
     assert result.slots["logo"].url.endswith("fan-logo-white.png")
 
 
-def test_an_unmatched_title_keeps_the_host_box_art_and_records_the_rest_as_missing(
-    tmp_path, grid_dir, boxart
-):
+def test_an_unmatched_title_records_every_slot_as_missing(tmp_path, grid_dir):
     resolver, selector, _, cache = build(tmp_path)
-    result = apply_title(
-        targets(grid_dir, boxart, names=["Totally Unknown Title"])[0], resolver, selector
-    )
+    result = apply_title(targets(grid_dir, names=["Totally Unknown Title"])[0], resolver, selector)
     assert sources(result) == {
-        "portrait": "host",
+        "portrait": "missing",
         "landscape": "missing",
         "hero": "missing",
         "logo": "missing",
@@ -169,7 +149,7 @@ def test_an_unmatched_title_keeps_the_host_box_art_and_records_the_rest_as_missi
     }
     stored = json.loads((tmp_path / "matches.json").read_text())
     missing = stored["titles"]["Totally Unknown Title"]["missing_slots"]
-    assert sorted(missing) == ["hero", "icon", "landscape", "logo"]
+    assert sorted(missing) == ["hero", "icon", "landscape", "logo", "portrait"]
 
 
 def test_repeated_429s_stop_the_run_with_everything_so_far_kept(tmp_path, grid_dir):
@@ -190,7 +170,7 @@ def test_repeated_429s_stop_the_run_with_everything_so_far_kept(tmp_path, grid_d
 # -- the resumability contract --------------------------------------------
 
 
-def test_the_cache_is_on_disk_after_every_title(tmp_path, grid_dir, boxart):
+def test_the_cache_is_on_disk_after_every_title(tmp_path, grid_dir):
     resolver, selector, _, _ = build(tmp_path)
     cache_path = tmp_path / "matches.json"
     seen: list[list[str]] = []
@@ -200,7 +180,7 @@ def test_the_cache_is_on_disk_after_every_title(tmp_path, grid_dir, boxart):
         seen.append(sorted(payload["titles"]))
 
     run_art(
-        targets(grid_dir, boxart, names=list(APPIDS)[:5]),
+        targets(grid_dir, names=list(APPIDS)[:5]),
         resolver,
         selector,
         on_title=snapshot,
@@ -220,8 +200,8 @@ def test_the_cache_is_on_disk_after_every_title(tmp_path, grid_dir, boxart):
     ]
 
 
-def test_a_second_pass_over_the_same_titles_makes_zero_http_calls(tmp_path, grid_dir, boxart):
-    entries = targets(grid_dir, boxart, names=list(APPIDS)[:5])
+def test_a_second_pass_over_the_same_titles_makes_zero_http_calls(tmp_path, grid_dir):
+    entries = targets(grid_dir, names=list(APPIDS)[:5])
     resolver, selector, first_transport, _ = build(tmp_path)
     run_art(entries, resolver, selector)
     assert first_transport.calls
@@ -230,7 +210,7 @@ def test_a_second_pass_over_the_same_titles_makes_zero_http_calls(tmp_path, grid
     resolver2, selector2, _, _ = build(tmp_path, second_transport)
     summary = run_art(entries, resolver2, selector2)
     assert second_transport.calls == []
-    assert summary.missing == 4  # the unmatched title's four empty slots
+    assert summary.missing == 5  # the unmatched title's five empty slots
     kept = [
         outcome.source
         for result in summary.results
@@ -272,9 +252,9 @@ def test_force_redownloads_and_replaces_an_existing_slot(tmp_path, grid_dir):
 
 
 def test_a_cached_slot_miss_is_not_requeried_but_retry_missing_reopens_it(
-    tmp_path, grid_dir, boxart
+    tmp_path, grid_dir
 ):
-    entry = targets(grid_dir, boxart, names=["Totally Unknown Title"])[0]
+    entry = targets(grid_dir, names=["Totally Unknown Title"])[0]
     resolver, selector, transport, _ = build(tmp_path)
     apply_title(entry, resolver, selector)
     first = len(transport.calls)
@@ -357,10 +337,10 @@ def test_a_transient_slot_failure_leaves_the_slot_open_for_the_next_run(tmp_path
 
 
 def test_webp_is_never_requested_or_written_anywhere_in_a_full_run(
-    tmp_path, grid_dir, boxart
+    tmp_path, grid_dir
 ):
     resolver, selector, transport, _ = build(tmp_path)
-    run_art(targets(grid_dir, boxart, names=list(APPIDS)[:5]), resolver, selector)
+    run_art(targets(grid_dir, names=list(APPIDS)[:5]), resolver, selector)
     assert not any("webp" in call.lower() for call in transport.calls)
     assert not any(path.suffix == ".webp" for path in grid_dir.iterdir())
     assert not any(path.suffix == ".part" for path in grid_dir.iterdir())
@@ -370,18 +350,18 @@ def test_webp_is_never_requested_or_written_anywhere_in_a_full_run(
 
 
 def test_progress_lines_and_the_summary_name_the_unmatched_titles(
-    tmp_path, grid_dir, boxart, capsys
+    tmp_path, grid_dir, capsys
 ):
     resolver, selector, _, _ = build(tmp_path)
     summary = run_art(
-        targets(grid_dir, boxart, names=["Elden Ring", "Totally Unknown Title"]),
+        targets(grid_dir, names=["Elden Ring", "Totally Unknown Title"]),
         resolver,
         selector,
         out=sys.stdout,
     )
     printed = capsys.readouterr().out
     assert "[1/2] Elden Ring: portrait=official" in printed
-    assert "[2/2] Totally Unknown Title: portrait=host" in printed
+    assert "[2/2] Totally Unknown Title: portrait=missing" in printed
     assert summary.unmatched == ["Totally Unknown Title"]
     assert any("no match for 1 title" in line for line in summary.lines())
 

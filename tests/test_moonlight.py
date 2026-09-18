@@ -1,14 +1,13 @@
-"""Tests for moonlight.py (spec 2.1, 2.3, 3.4): binary discovery, `list
---csv` parsing, and `stream`'s exec.
+"""Tests for moonlight.py (spec 2.1, 2.3, 3.4): binary discovery, `list`
+output parsing, and `stream`'s exec.
 
-TODO (fixtures): ``tests/fixtures/moonlight_list_sample.csv`` is a synthetic
-capture, hand-built from the documented CSV shape, not a real one -- see
-``tests/fixtures/README.md`` for exactly what to swap in and how to capture
-it once real hosts are available. Every test in this file is written against
-that fixture's *shape* (header names, one cached/one uncached boxart row, one
-hidden row, one collection row), so replacing the fixture file should not
-require rewriting these tests, only their row-count/name assertions if the
-real capture's contents differ.
+TODO (fixtures): ``tests/fixtures/moonlight_list_sample.txt`` is a synthetic
+capture, hand-built from the documented plain-list shape (one name per
+line), not a real one -- see ``tests/fixtures/README.md`` for exactly what to
+swap in and how to capture it once real hosts are available. Every test in
+this file is written against that fixture's *shape*, so replacing the
+fixture file should not require rewriting these tests, only their name
+assertions if the real capture's contents differ.
 """
 
 from __future__ import annotations
@@ -22,7 +21,7 @@ import pytest
 from moonlight_steam_sync import moonlight
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
-SAMPLE_CSV = (FIXTURES_DIR / "moonlight_list_sample.csv").read_text()
+SAMPLE_LIST = (FIXTURES_DIR / "moonlight_list_sample.txt").read_text()
 
 
 def _write_fake_moonlight(bin_dir: Path, *, script_body: str) -> None:
@@ -69,58 +68,55 @@ def test_find_binary_returns_none_when_nothing_available(tmp_path, monkeypatch):
     assert moonlight.find_binary() is None
 
 
-# --- list_apps / CSV parsing --------------------------------------------
+# --- list_apps / plain list parsing ---------------------------------------
 
 
-def test_list_apps_parses_and_filters_sample_csv(tmp_path, monkeypatch):
+def test_list_apps_parses_the_sample_list(tmp_path, monkeypatch):
     monkeypatch.delenv("MOONLIGHT_BIN", raising=False)
-    _write_fake_moonlight(tmp_path, script_body=f"cat <<'EOF'\n{SAMPLE_CSV}EOF\n")
+    _write_fake_moonlight(tmp_path, script_body=f"cat <<'EOF'\n{SAMPLE_LIST}EOF\n")
     monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
 
     apps = moonlight.list_apps("MY-GAMING-PC")
 
-    names = [app.name for app in apps]
-    # "Hidden Game" (Hidden=True) and "My Collection" (App Collection
-    # Game=True) are dropped entirely; everything else survives.
-    assert names == ["Elden Ring", "Desktop", "Steam Big Picture", "Some Weird Launcher Name"]
-    assert all(not app.hidden for app in apps)
-
-    elden_ring = apps[0]
-    assert elden_ring.id == "1"
-    # The real Boxart URL column is percent-encoded (QUrl::toDisplayString())
-    # and its cache path always contains spaces; this must come back decoded.
-    assert elden_ring.boxart_path == (
-        "/home/deck/.var/app/com.moonlight_stream.Moonlight/cache/"
-        "Moonlight Game Streaming Project/Moonlight/boxart/abc-host-uuid/1.png"
-    )
-
-    desktop = apps[1]
-    assert desktop.boxart_path is None  # qrc:/res/no_app_image.png -> not cached
+    assert [app.name for app in apps] == [
+        "Elden Ring",
+        "Desktop",
+        "Steam Big Picture",
+        "Some Weird Launcher Name",
+    ]
 
 
-def test_list_apps_builds_expected_argv(tmp_path, monkeypatch):
+def test_list_apps_builds_the_plain_argv_never_csv(tmp_path, monkeypatch):
+    """The plain form on purpose: ``--csv`` makes moonlight fetch box art for
+    every title before printing, a burst that has crashed an Apollo host."""
     monkeypatch.delenv("MOONLIGHT_BIN", raising=False)
     captured = tmp_path / "argv.txt"
     _write_fake_moonlight(
         tmp_path,
-        script_body=f'echo "$@" > {captured}\ncat <<\'EOF\'\n{SAMPLE_CSV}EOF\n',
+        script_body=f'echo "$@" > {captured}\ncat <<\'EOF\'\n{SAMPLE_LIST}EOF\n',
     )
     monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
 
     moonlight.list_apps("MY-GAMING-PC")
 
-    assert captured.read_text().split() == ["list", "MY-GAMING-PC", "--csv"]
+    assert captured.read_text().split() == ["list", "MY-GAMING-PC"]
 
 
-def test_list_apps_raises_format_error_on_unexpected_header(tmp_path, monkeypatch):
-    monkeypatch.delenv("MOONLIGHT_BIN", raising=False)
-    _write_fake_moonlight(
-        tmp_path, script_body="printf 'Name,ID\\nElden Ring,1\\n'\n"
-    )
-    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
-
-    with pytest.raises(moonlight.MoonlightCsvFormatError, match="Hidden"):
-        moonlight.list_apps("MY-GAMING-PC")
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("", []),
+        ("\n\n", []),
+        ("Elden Ring\n", ["Elden Ring"]),
+        # A name is kept verbatim, spaces and punctuation included: it is
+        # what `moonlight stream` is later handed.
+        ("Hades II\u2122\nSome: Weird, \"Name\"\n", ["Hades II\u2122", 'Some: Weird, "Name"']),
+        # Blank lines are skipped, a trailing newline is not a title.
+        ("A\n\nB", ["A", "B"]),
+    ],
+)
+def test_parse_list(text, expected):
+    assert [app.name for app in moonlight._parse_list(text)] == expected
 
 
 def test_list_apps_raises_not_found_without_a_binary(tmp_path, monkeypatch):
@@ -149,36 +145,6 @@ def test_list_apps_raises_unreachable_on_timeout(tmp_path, monkeypatch):
 
     with pytest.raises(moonlight.MoonlightUnreachableError, match="timed out"):
         moonlight.list_apps("SLOW-HOST", timeout=0.2)
-
-
-@pytest.mark.parametrize(
-    "value,expected",
-    [("True", True), ("true", True), ("1", True), ("yes", True), ("False", False), ("", False)],
-)
-def test_parse_bool_spellings(value, expected):
-    assert moonlight._parse_bool(value) is expected
-
-
-@pytest.mark.parametrize(
-    "value,expected",
-    [
-        ("file:///a/b/1.png", "/a/b/1.png"),
-        # QUrl::toDisplayString() percent-encodes spaces (and other
-        # reserved characters) in the path; these must come back decoded.
-        (
-            "file:///home/deck/.var/app/com.moonlight_stream.Moonlight/cache/"
-            "Moonlight%20Game%20Streaming%20Project/Moonlight/boxart/"
-            "abc-host-uuid/1.png",
-            "/home/deck/.var/app/com.moonlight_stream.Moonlight/cache/"
-            "Moonlight Game Streaming Project/Moonlight/boxart/"
-            "abc-host-uuid/1.png",
-        ),
-        ("qrc:/res/no_app_image.png", None),
-        ("", None),
-    ],
-)
-def test_parse_boxart(value, expected):
-    assert moonlight._parse_boxart(value) == expected
 
 
 # --- stream --------------------------------------------------------------

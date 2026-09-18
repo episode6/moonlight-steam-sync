@@ -223,7 +223,6 @@ wins:
 2. **SteamGridDB**, for anything the CDN has no image for (and for non-Steam
    titles), preferring the styles that look like official box art and taking
    the highest-scored result.
-3. **The Moonlight host's own box art**, as a last resort for the portrait.
 
 Rules worth knowing:
 

@@ -61,14 +61,14 @@ def loginusers_text() -> str:
 
 
 @pytest.fixture
-def large_library_csv() -> str:
-    """``moonlight list --csv`` from a 500-title host, for the resumability test.
+def large_library_list() -> str:
+    """``moonlight list <host>`` from a 500-title host, for the resumability test.
 
-    TODO (synthetic fixture): drop ``tests/fixtures/moonlight_list_large_real.csv``
-    in (a sanitised real capture from the user's biggest host, see
+    TODO (synthetic fixture): drop ``tests/fixtures/moonlight_list_large_real.txt``
+    in (a real capture from the user's biggest host, see
     ``tests/fixtures/build_synthetic_moonlight_list.py`` for how) and every
     test that asks for this fixture switches to it.
     """
-    data = fixture_bytes("moonlight_list_large_real.csv", "moonlight_list_large_synthetic.csv")
-    assert data is not None, "tests/fixtures/moonlight_list_large_synthetic.csv is missing"
+    data = fixture_bytes("moonlight_list_large_real.txt", "moonlight_list_large_synthetic.txt")
+    assert data is not None, "tests/fixtures/moonlight_list_large_synthetic.txt is missing"
     return data.decode("utf-8")
