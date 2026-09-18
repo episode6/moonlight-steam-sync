@@ -7,9 +7,10 @@ name: Release
 # That build+smoke job also runs on pull_request and workflow_dispatch, not
 # just on a v* tag: this workflow cannot be proven by tagging inside a PR,
 # so instead every PR that touches it (including the one that introduced
-# it) actually builds the zipapp and runs it, twice, on both Pythons. Only the final "create the release and attach the
-# asset" step is tag-only -- see AGENTS.md "Cutting a release" for the
-# command sequence that pushes a v* tag.
+# it) actually builds the zipapp and runs it, twice, on both Pythons. Only
+# the final "create the release and attach the asset" step is tag-only --
+# see AGENTS.md "Cutting a release" for the command sequence that pushes a
+# v* tag.
 on:
   push:
     tags: ["v*"]
