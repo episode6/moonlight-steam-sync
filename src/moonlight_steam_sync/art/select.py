@@ -1,10 +1,9 @@
 """Step B of spec 3.5: per slot, the first source that yields an image wins.
 
-Sources per slot, in order (1. official, 2. community, 3. host):
+Sources per slot, in order (1. official, 2. community):
 
 * portrait ``<id>p`` -- CDN ``library_600x900_2x.jpg`` then
-  ``library_600x900.jpg``; SGDB ``grids`` 600x900 ``alternate``; the
-  Moonlight box art from ``list --csv``.
+  ``library_600x900.jpg``; SGDB ``grids`` 600x900 ``alternate``.
 * landscape ``<id>`` -- CDN ``header.jpg``; SGDB ``grids`` 920x430 then
   460x215.
 * hero ``<id>_hero`` -- CDN ``library_hero.jpg``; SGDB ``heroes`` 1920x620
@@ -96,21 +95,18 @@ _OFFICIAL_URLS = {
 }
 
 _SNIFF_BYTES = 16
-_COPY_CHUNK = 64 * 1024
 
 
 @dataclass(frozen=True)
 class Candidate:
     """One thing worth trying for a slot."""
 
-    source: str  # "official" | "community" | "host"
-    url: str | None = None
-    path: Path | None = None
+    source: str  # "official" | "community"
+    url: str
     detail: str = ""
 
     def describe(self) -> str:
-        where = self.url or (str(self.path) if self.path else "?")
-        return f"{self.source}: {where}" + (f" ({self.detail})" if self.detail else "")
+        return f"{self.source}: {self.url}" + (f" ({self.detail})" if self.detail else "")
 
 
 @dataclass
@@ -174,14 +170,10 @@ class Selector:
 
     # -- candidates ------------------------------------------------------
 
-    def candidates(
-        self, slot: Slot, match: Match, boxart_path: Path | None = None
-    ) -> Iterator[Candidate]:
+    def candidates(self, slot: Slot, match: Match) -> Iterator[Candidate]:
         """Yield sources for ``slot`` in spec 3.5 order, lazily."""
         yield from self._official(slot, match)
         yield from self._community(slot, match)
-        if slot.key == "portrait" and boxart_path is not None and Path(boxart_path).is_file():
-            yield Candidate("host", path=Path(boxart_path), detail="moonlight box art")
 
     def _official(self, slot: Slot, match: Match) -> Iterator[Candidate]:
         appid = match.steam_appid
@@ -241,7 +233,6 @@ class Selector:
         *,
         appid: int,
         grid_dir: Path,
-        boxart_path: Path | None = None,
         explain: list[str] | None = None,
     ) -> Fill | None:
         """Fill ``slot`` for the shortcut ``appid`` under ``grid_dir``.
@@ -251,7 +242,7 @@ class Selector:
         """
         dest_base = grid_dir / slot_basename(appid, slot)
         self.last_attempt_failed = False
-        for candidate in self.candidates(slot, match, boxart_path):
+        for candidate in self.candidates(slot, match):
             if explain is not None:
                 explain.append(f"{slot.key}: try {candidate.describe()}")
             try:
@@ -270,10 +261,6 @@ class Selector:
         return None
 
     def _materialise(self, candidate: Candidate, dest_base: Path) -> Path | None:
-        if candidate.path is not None:
-            return copy_local(candidate.path, dest_base)
-        if candidate.url is None:
-            return None
         self.attempted.append(candidate.url)
         return self.download(candidate.url, dest_base)
 
@@ -300,25 +287,6 @@ class Selector:
                     header.extend(chunk[: _SNIFF_BYTES - len(header)])
                 handle.write(chunk)
         return _finish(part, dest_base, bytes(header))
-
-
-def copy_local(source: Path, dest_base: Path) -> Path | None:
-    """Same ``.part``-then-rename dance for a local file (host box art)."""
-    part = Path(str(dest_base) + ".part")
-    part.parent.mkdir(parents=True, exist_ok=True)
-    header = bytearray()
-    try:
-        with Path(source).open("rb") as reader, part.open("wb") as handle:
-            while True:
-                chunk = reader.read(_COPY_CHUNK)
-                if not chunk:
-                    break
-                if len(header) < _SNIFF_BYTES:
-                    header.extend(chunk[: _SNIFF_BYTES - len(header)])
-                handle.write(chunk)
-    except OSError:
-        return None
-    return _finish(part, dest_base, bytes(header))
 
 
 def _finish(part: Path, dest_base: Path, header: bytes) -> Path | None:

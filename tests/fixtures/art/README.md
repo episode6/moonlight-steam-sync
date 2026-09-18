@@ -37,7 +37,7 @@
 | `Hades II™` | a title carrying a trademark glyph (normalisation), and a missing `library_600x900_2x.jpg` so the 1x official portrait URL is used. |
 | `Fan Made Adventure` | a **non-Steam** game: community art only, score sorting (the fixture lists the low-score asset first), a second-choice query (`920x430` empty -> `460x215`), and an asset whose bytes are WebP behind a `.png` URL, which must be rejected. |
 | `Old Console Classic` | a Steam game with **no `logo.png` on the CDN**, so the logo slot falls through to community art while the rest stay official. |
-| `Totally Unknown Title` | **zero results** anywhere: no match, a negative cache entry, and the Moonlight box art as the portrait of last resort. |
+| `Totally Unknown Title` | **zero results** anywhere: no match, a negative cache entry, every slot missing. |
 | `Rate Limited Game` | SteamGridDB and the store both answer **429** forever, so the run hits the five-consecutive-429 hard stop and exits 4 with everything so far kept. |
 | `Hollow Knight` | the adoptable SteamTinkerLaunch-era entry in `../shortcuts_synthetic.vdf`, so the `sync` end-to-end tests can adopt an existing shortcut and dress it (every slot official, like Elden Ring). |
 

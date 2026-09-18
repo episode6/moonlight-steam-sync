@@ -26,8 +26,8 @@ The seven titles exercise the cases spec PR-4 asks for (the seventh serves PR-5)
                               WebP despite a ``.png`` URL (must be rejected).
 4. ``Old Console Classic`` -- a Steam game with no ``logo.png`` on the CDN, so the
                               logo slot falls through to community art.
-5. ``Totally Unknown Title``-- zero results anywhere: no match, negative cache, and
-                              the Moonlight box art as the portrait of last resort.
+5. ``Totally Unknown Title``-- zero results anywhere: no match, negative cache, every
+                              slot missing.
 6. ``Rate Limited Game``   -- SteamGridDB and the store both answer 429 forever, so
                               the run hits the five-consecutive-429 hard stop.
 7. ``Hollow Knight``       -- the adoptable SteamTinkerLaunch-era entry in

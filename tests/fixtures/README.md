@@ -15,8 +15,8 @@ synthetic file for a real capture is a file drop plus (for the real
 | `shortcuts_synthetic.vdf` | Steam's binary shortcut store, 3 entries (spec 2.1) | `shortcuts_real.vdf` -- a sanitised `userdata/<steamid3>/config/shortcuts.vdf` from a device |
 | `build_synthetic_shortcuts.py` | the raw-bytes generator for the above | nothing; it stays, and `test_vdf.py` asserts the committed fixture still matches its output |
 | `loginusers_synthetic.vdf` | Steam's text-KeyValues `config/loginusers.vdf` (spec 3.4) | a sanitised real `loginusers.vdf` |
-| `moonlight_list_sample.csv` | `moonlight list --csv` output (spec 2.1/2.3) | real `moonlight list <host> --csv` output, host UUID scrubbed |
-| `moonlight_list_large_synthetic.csv` | the same, from a 500-title host (spec 7; the resumability test in `tests/test_sync_e2e.py`) | `moonlight_list_large_real.csv` -- a real capture from the biggest host, host UUID scrubbed |
+| `moonlight_list_sample.txt` | `moonlight list <host>` output (spec 2.1/2.3) | real `moonlight list <host>` output |
+| `moonlight_list_large_synthetic.txt` | the same, from a 500-title host (spec 7; the resumability test in `tests/test_sync_e2e.py`) | `moonlight_list_large_real.txt` -- a real capture from the biggest host |
 | `build_synthetic_moonlight_list.py` | the generator for the above | nothing; it stays and documents the capture |
 
 ## TODO: `shortcuts_real.vdf`
@@ -46,52 +46,38 @@ consistent with the `userdata/` directory names) and replacing
 `AccountName`/`PersonaName`. Drop it in as `loginusers_real.vdf`; the
 tokenizer test picks it up automatically.
 
-## `moonlight_list_sample.csv`
+## `moonlight_list_sample.txt`
 
-**SYNTHETIC -- TODO: replace with real data.** Hand-built to match the exact
-byte shape moonlight-qt's `--csv` flag emits, per its source
-(`app/cli/listapps.cpp`'s `printAppCSV`/`printAppsCSV` and
-`app/backend/boxartmanager.cpp`), not just the field names:
+**SYNTHETIC -- TODO: replace with real data.** Hand-built to match the shape
+moonlight-qt's plain `list <host>` command emits, per its source
+(`app/cli/listapps.cpp`): one app name per line (`"%s\n"`), nothing else on
+stdout, no header. `moonlight.py` keeps every non-blank line verbatim.
 
-- Header is `Name, ID, HDR Support, App Collection Game, Hidden, Direct
-  Launch, Boxart URL` with a literal `", "` (comma-space) separator, so
-  every field but `Name` carries a leading space in the raw text --
-  `moonlight.py` parses with `skipinitialspace=True` and validates the
-  header once, rather than indexing columns positionally.
-- Booleans are lowercase `true`/`false` (confirmed against the source, not
-  guessed).
-- `Boxart URL` is `QUrl::fromLocalFile(...).toDisplayString()`, which
-  percent-encodes the path -- the real cache path always contains spaces
-  (`.../cache/Moonlight Game Streaming Project/Moonlight/boxart/<uuid>/<id>.png`),
-  so the fixture's `file://` rows use `%20` and `moonlight.py`'s
-  `_parse_boxart` percent-decodes rather than just stripping the scheme.
+The tool deliberately does not use `--csv`: that mode loads box art for
+every app before printing, a burst of per-title fetches that has crashed an
+Apollo host on a large library. The CSV-only columns (id, the
+`Hidden`/`App Collection Game` flags, the cached box-art path) are therefore
+not part of the fixture or the parser.
 
-One `file://` boxart path and one `qrc:/res/no_app_image.png` (not cached)
-row, one `Hidden=true` row and one `App Collection Game=true` row exercise
-the filtering in `moonlight.list_apps()`.
+TODO: replace this file with real `moonlight list <host>` output captured
+from each of the user's Moonlight hosts (once available). Capturing it is a
+one-line run: `moonlight list <host> > moonlight_list_<host>.txt`. It holds
+only app names, so there is nothing host-specific to scrub.
 
-TODO: replace this file with real `moonlight list --host <host> --csv`
-output captured from each of the user's Moonlight hosts (once available),
-with the host UUID in the `Boxart URL` column's cache path scrubbed to
-something like `<host-uuid>`. Capturing it is a one-line run: `moonlight
-list <host> --csv > moonlight_list_<host>.csv`, then hand-edit out any
-real host name, UUID, or absolute home directory before committing.
+## `moonlight_list_large_synthetic.txt`
 
-## `moonlight_list_large_synthetic.csv`
+**SYNTHETIC -- TODO: replace with real data.** 500 lines, `Synthetic Title
+001` through `500`, in the same shape as the sample above
+(`build_synthetic_moonlight_list.py` writes it through the same
+`moonlight_list()` helper the end-to-end tests use). It exists so the
+resumability test (spec PR-5 (b), 3.9) runs against a library the size of
+the user's real one: a fake HTTP layer dies after N calls, and the rerun
+must do exactly the remaining work.
 
-**SYNTHETIC -- TODO: replace with real data.** 500 rows, `Synthetic Title
-001` through `500`, no cached box art, in the same byte shape as the sample
-above (`build_synthetic_moonlight_list.py` writes it through the same
-`csv_row()` helper the end-to-end tests use). It exists so the resumability
-test (spec PR-5 (b), 3.9) runs against a library the size of the user's
-real one: a fake HTTP layer dies after N calls, and the rerun must do
-exactly the remaining work.
-
-TODO: replace with `moonlight list <host> --csv > moonlight_list_large_real.csv`
-from the largest host, host UUID and home directory scrubbed as for the
-sample. `tests/conftest.py`'s `large_library_csv` fixture prefers the real
-file when it exists; the fake art server for the test keys on the CSV's
-names, so real names work unchanged.
+TODO: replace with `moonlight list <host> > moonlight_list_large_real.txt`
+from the largest host. `tests/conftest.py`'s `large_library_list` fixture
+prefers the real file when it exists; the fake art server for the test keys
+on the list's names, so real names work unchanged.
 
 ## Fixtures owned by other PRs
 

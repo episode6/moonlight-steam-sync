@@ -5,7 +5,7 @@ it through **one narrow seam** so the two can be built independently:
 
 .. code-block:: text
 
-    ArtTarget(name, appid, grid_dir, boxart_path)   what the art phase needs
+    ArtTarget(name, appid, grid_dir)                what the art phase needs
     TargetProvider.targets()                        where those come from
     TargetProvider.set_icon(appid, icon_path)       the one thing art writes back
     TargetProvider.commit()                         flush those icon patches
@@ -14,8 +14,7 @@ it through **one narrow seam** so the two can be built independently:
 0x80000000``, spec 2.1), which is knowable *before* the shortcut exists, and
 ``grid_dir`` is ``userdata/<steamid3>/config/grid``. Nothing in this package
 itself resolves artwork through that seam: :class:`SteamShortcutProvider`
-(backed by the PR-2 ``steam``/``shortcuts`` modules) supplies it, and the
-``sync`` orchestration (PR-5) supplies the Moonlight box art paths.
+(backed by the PR-2 ``steam``/``shortcuts`` modules) supplies it.
 
 Implementations of ``set_icon`` must **not** write ``shortcuts.vdf`` on the
 spot: spec 3.6 wants exactly one atomic vdf write per run, after the whole
@@ -66,14 +65,11 @@ class ArtTarget:
         appid: the shortcut's 32-bit appid; the grid filenames are built from
             this, never from the Steam store appid the art came from.
         grid_dir: ``userdata/<steamid3>/config/grid``.
-        boxart_path: the Moonlight box art PNG from ``list --csv``, when the
-            host cached one; the last-resort source for the portrait slot.
     """
 
     name: str
     appid: int
     grid_dir: Path
-    boxart_path: Path | None = None
 
 
 class TargetProvider(Protocol):
@@ -332,7 +328,6 @@ def apply_title(
             match,
             appid=target.appid,
             grid_dir=target.grid_dir,
-            boxart_path=target.boxart_path,
             explain=chain if explain else None,
         )
         if fill is None:

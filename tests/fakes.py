@@ -5,14 +5,14 @@ Nothing in the test suite touches a real Steam install or a real Moonlight
 host. The Steam tree is built under ``tmp_path`` and pointed at through
 ``$STEAM_ROOT`` (the documented override, spec 3.4); every subprocess call
 the Steam side makes goes through :class:`FakeRunner`; and ``moonlight`` is
-a shell script on ``PATH`` that prints a ``list --csv`` capture, so the real
-:func:`moonlight_steam_sync.moonlight.list_apps` (argv, timeout, CSV
-parsing) is what the end-to-end tests exercise.
+a shell script on ``PATH`` that prints a ``list <host>`` capture, so the real
+:func:`moonlight_steam_sync.moonlight.list_apps` (argv, timeout, parsing) is
+what the end-to-end tests exercise.
 
-TODO(real-data): the CSV those scripts print is SYNTHETIC -- see
-``tests/fixtures/README.md`` for the exact byte shape it copies from
-moonlight-qt's source and how to replace it with a real
-``moonlight list <host> --csv`` capture per host. :func:`moonlight_csv` and
+TODO(real-data): the list those scripts print is SYNTHETIC -- see
+``tests/fixtures/README.md`` for the shape it copies from moonlight-qt's
+source and how to replace it with a real ``moonlight list <host>`` capture
+per host. :func:`moonlight_list` and
 ``tests/fixtures/build_synthetic_moonlight_list.py`` are the only places
 that shape is written down in code.
 """
@@ -22,7 +22,6 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
-import urllib.parse
 from collections.abc import Iterable, Sequence
 from pathlib import Path
 
@@ -37,11 +36,6 @@ FIXTURES = Path(__file__).resolve().parent / "fixtures"
 #: that makes those entries "owned" (spec 3.3).
 STREAM_SH = "/home/deck/server-scripts/chimera/stream.sh"
 STEAMID3 = 123456789
-
-#: moonlight-qt's ``--csv`` header, verbatim (spec 2.3): fields separated by
-#: ``", "``.
-CSV_HEADER = "Name, ID, HDR Support, App Collection Game, Hidden, Direct Launch, Boxart URL"
-NO_BOXART = "qrc:/res/no_app_image.png"
 
 
 # ---------------------------------------------------------------------------
@@ -143,59 +137,31 @@ def point_steam_root_at(monkeypatch: pytest.MonkeyPatch, root: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def csv_row(
-    name: str,
-    app_id: int | str,
-    *,
-    boxart: str | None = None,
-    hidden: bool = False,
-    collection: bool = False,
-) -> str:
-    """One ``moonlight list --csv`` row, shaped like moonlight-qt writes it.
-
-    ``boxart`` is a filesystem path (percent-encoded into a ``file://`` URL
-    the way ``QUrl::toDisplayString()`` does) or ``None`` for "not cached"
-    (``qrc:/res/no_app_image.png``). Names are double-quoted; a quote inside
-    a name is doubled, which is what Qt's CSV writer and Python's reader
-    agree on.
-    """
-    quoted_name = '"' + name.replace('"', '""') + '"'
-    url = NO_BOXART if boxart is None else "file://" + urllib.parse.quote(boxart)
-    return ",".join(
-        [
-            quoted_name,
-            str(app_id),
-            "false",
-            "true" if collection else "false",
-            "true" if hidden else "false",
-            "true",
-            f'"{url}"',
-        ]
-    )
-
-
-def moonlight_csv(rows: Iterable[str]) -> str:
-    return CSV_HEADER + "\n" + "".join(row + "\n" for row in rows)
+def moonlight_list(names: Iterable[str]) -> str:
+    """Plain ``moonlight list <host>`` output, shaped like moonlight-qt
+    writes it (``app/cli/listapps.cpp``): one app name per line, nothing
+    else on stdout, no header."""
+    return "".join(name + "\n" for name in names)
 
 
 def install_fake_moonlight(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, csv_text: str, *, exit_code: int = 0
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, list_text: str, *, exit_code: int = 0
 ) -> Path:
-    """Put a ``moonlight`` shell script on ``PATH`` that prints ``csv_text``.
+    """Put a ``moonlight`` shell script on ``PATH`` that prints ``list_text``.
 
     Records its argv to ``<tmp_path>/moonlight-argv.txt`` so a test can
-    check the real ``list <host> --csv`` invocation went out.
+    check the real ``list <host>`` invocation went out.
     """
     bin_dir = tmp_path / "fake-bin"
     bin_dir.mkdir(exist_ok=True)
-    csv_file = tmp_path / "moonlight-list.csv"
-    csv_file.write_text(csv_text, encoding="utf-8")
+    list_file = tmp_path / "moonlight-list.txt"
+    list_file.write_text(list_text, encoding="utf-8")
     argv_file = tmp_path / "moonlight-argv.txt"
     script = bin_dir / "moonlight"
     script.write_text(
         "#!/bin/sh\n"
         f'printf "%s\\n" "$@" > "{argv_file}"\n'
-        f'cat "{csv_file}"\n'
+        f'cat "{list_file}"\n'
         f"exit {exit_code}\n",
         encoding="utf-8",
     )

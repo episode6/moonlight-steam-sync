@@ -176,35 +176,6 @@ def test_a_stale_part_is_overwritten_by_the_next_run(tmp_path) -> None:
     assert sorted(p.name for p in tmp_path.iterdir()) == [f"{APPID}p.jpg"]
 
 
-def test_host_box_art_is_the_last_resort_for_the_portrait_only(tmp_path) -> None:
-    boxart = tmp_path / "boxart.png"
-    boxart.write_bytes((FIXTURE_DIR / "images" / "tiny.png").read_bytes())
-    selector, transport = make_selector()
-    match = Match(name="Totally Unknown Title")
-    fill = selector.fill(
-        PORTRAIT, match, appid=APPID, grid_dir=tmp_path, boxart_path=boxart
-    )
-    assert fill.source == "host"
-    assert fill.path.name == f"{APPID}p.png"
-    assert transport.calls == []
-    assert selector.fill(HERO, match, appid=APPID, grid_dir=tmp_path, boxart_path=boxart) is None
-
-
-def test_a_host_box_art_placeholder_that_is_not_an_image_is_rejected(tmp_path) -> None:
-    boxart = tmp_path / "no_app_image.txt"
-    boxart.write_text("not an image")
-    selector, _ = make_selector()
-    fill = selector.fill(
-        PORTRAIT,
-        Match(name="Totally Unknown Title"),
-        appid=APPID,
-        grid_dir=tmp_path,
-        boxart_path=boxart,
-    )
-    assert fill is None
-    assert list(tmp_path.glob("*.part")) == []
-
-
 def test_the_icon_slot_needs_the_getapps_hash(tmp_path) -> None:
     selector, transport = make_selector()
     match = Match(name="Elden Ring", steam_appid=1245620)
