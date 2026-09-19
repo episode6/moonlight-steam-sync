@@ -213,6 +213,20 @@ def test_list_cached_serves_the_cache_without_running_moonlight(world, tmp_path,
     assert cached.code == 0, cached.err
     assert "added    Elden Ring" in cached.out
 
+    # --json: the `app` events must actually carry cached:true and a
+    # cached_when timestamp, not just the human line above (spec 3.4.6).
+    json_cached = world.run(["--json", "list", "--cached"])
+    assert json_cached.code == 0, json_cached.err
+    app_events = [
+        json.loads(line)
+        for line in json_cached.out.splitlines()
+        if json.loads(line)["event"] == "app"
+    ]
+    assert app_events
+    for event in app_events:
+        assert event["cached"] is True
+        assert event["cached_when"]  # non-empty ISO timestamp
+
 
 def test_list_cached_with_no_cache_file_exits_3(fresh_world):
     result = fresh_world.run(["list", "--cached"])
