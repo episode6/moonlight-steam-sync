@@ -37,9 +37,10 @@ import argparse
 import contextlib
 import itertools
 import json
+import os
 import signal
 import sys
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, TextIO
@@ -57,11 +58,20 @@ from moonlight_steam_sync.art.apply import (
 )
 from moonlight_steam_sync.art.cli import ArtServices, build_services
 from moonlight_steam_sync.art.http import HardStop
-from moonlight_steam_sync.art.resolve import MatchCache, Resolver, default_cache_path
+from moonlight_steam_sync.art.resolve import Match, MatchCache, Resolver, default_cache_path
 from moonlight_steam_sync.art.select import SLOTS, Selector, existing_slot_file
-from moonlight_steam_sync.config import Config, ConfigError, load_ignore_file
+from moonlight_steam_sync.config import (
+    Config,
+    ConfigError,
+    default_exe,
+    load_ignore_file,
+    load_owned_apps,
+    owned_apps_steamid3,
+)
 from moonlight_steam_sync.reporting import Reporter, match_json, slot_json_value
 from moonlight_steam_sync.shortcuts import (
+    CLIENT_APP_NAME,
+    CLIENT_LAUNCH_OPTIONS,
     Shortcut,
     ShortcutsError,
     ShortcutsFile,
@@ -84,6 +94,7 @@ RESUME_HINT = "interrupted; resume with the same command"
 LABEL_ADDED = "added"
 LABEL_IGNORED = "ignored"
 LABEL_NEW = "new"
+LABEL_PARKED = "parked"
 
 
 # ---------------------------------------------------------------------------
@@ -208,6 +219,60 @@ def _load_ignore_extra_or_report(
         return None
 
 
+def _owned_apps_path(args: argparse.Namespace, config: Config) -> Path | None:
+    flag = getattr(args, "owned_apps", None)
+    if flag:
+        return Path(flag)
+    return config.owned_apps_path
+
+
+def _load_owned_or_report(
+    command: str, args: argparse.Namespace, config: Config, reporter: Reporter
+) -> tuple[bool, dict[int, str] | None]:
+    """``(ok, owned)``: the ``--owned-apps`` map (decky spec 3.4.1), ``None``
+    without the flag, or ``(False, None)`` after reporting exit 1 for a
+    missing or invalid file -- before the library is opened or Moonlight is
+    asked anything (spec 3.4.8). A ``launch_options`` template without
+    ``{name}`` is refused too: a hidden entry's ``AppName`` is the owned
+    game's, so only the launch options can carry the Moonlight name back."""
+    path = _owned_apps_path(args, config)
+    if path is None:
+        return True, None
+    try:
+        owned = load_owned_apps(path)
+    except ConfigError as exc:
+        reporter.error(f"{command}: {exc}", EXIT_USAGE_OR_CONFIG)
+        return False, None
+    if "{name}" not in config.launch_options:
+        reporter.error(
+            f"{command}: --owned-apps needs a launch_options template with {{name}} in it "
+            f"(got {config.launch_options!r}); a hidden entry's name is the owned game's, "
+            "so the launch options are the only way back to the Moonlight name",
+            EXIT_USAGE_OR_CONFIG,
+        )
+        return False, None
+    return True, owned
+
+
+def _check_owned_user(
+    command: str, args: argparse.Namespace, config: Config, library: Library, reporter: Reporter
+) -> bool:
+    """The steamid3 check (decky spec 3.4.1): a stale owned-apps file from
+    another account can never hide shortcuts on the wrong one."""
+    path = _owned_apps_path(args, config)
+    if path is None:
+        return True
+    wanted = owned_apps_steamid3(path)
+    if wanted is None or wanted == library.user.steamid3:
+        return True
+    reporter.error(
+        f"{command}: owned-apps file is for Steam user {wanted} but sync would write to "
+        f"user {library.user.steamid3}",
+        EXIT_USAGE_OR_CONFIG,
+    )
+    return False
+
+
 def _need_host(command: str, config: Config, reporter: Reporter) -> bool:
     if config.host:
         return True
@@ -219,8 +284,30 @@ def _need_host(command: str, config: Config, reporter: Reporter) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# the plan: (host list - ignore) - owned shortcuts (spec 3.7)
+# the plan: (host list - ignore) - owned shortcuts (spec 3.7), with kinds
+# (decky spec 3.2), replacements (3.4.2), duplicates (3.3), parking (3.12)
+# and the client entry (3.4.5)
 # ---------------------------------------------------------------------------
+
+#: Title kinds (decky spec 3.2).
+KIND_STREAM = "stream"
+KIND_SHORTCUT = "shortcut"
+KIND_IGNORED = "ignored"
+KIND_PARKED = "parked"
+KIND_DUPLICATE = "duplicate"
+KIND_CLIENT = "client"
+
+#: ``Match.how`` values trusted enough to hide a tile behind a Stream button
+#: (decky spec 3.2): a fuzzy hit is right often enough for artwork, but a
+#: wrong Stream button on the real game's page is worse than an extra tile.
+STREAM_HOWS = frozenset(
+    {"override", "pinned", "sgdb:exact-verified", "sgdb:exact", "steamstore:exact"}
+)
+
+#: ``Replacement.reason`` values (decky spec 3.4.2).
+REASON_KIND_CHANGED = "kind-changed"
+REASON_NAME_CHANGED = "name-changed"
+REASON_REMATCHED = "rematched"
 
 
 @dataclass
@@ -230,6 +317,11 @@ class Adopted:
     shortcut: Shortcut
     name: str
     app: moonlight.App | None = None
+    #: ``stream`` / ``shortcut`` for a published name, ``parked`` for an
+    #: entry that is (or will be, with ``--park-unpublished``) hidden because
+    #: the active host does not publish it, ``client`` for the Moonlight
+    #: client entry (decky spec 3.2, 3.4.5, 3.12).
+    kind: str = KIND_SHORTCUT
 
 
 @dataclass
@@ -241,33 +333,122 @@ class Addition:
 
 
 @dataclass
+class Replacement:
+    """An owned entry whose ``AppName`` (and so appid) must change (decky spec 3.4.2).
+
+    A rename is never an in-place edit -- the appid is derived from the
+    name, so the grid files would silently stop matching -- but a remove +
+    append whose grid files are *renamed* to the new appid before the art
+    phase, so a kind flip costs zero downloads. ``rematched`` (the title's
+    ``stale_art`` flag, decky spec 3.4.4) deletes them instead: the art on
+    disk belongs to the old match.
+    """
+
+    old: Shortcut
+    new: Shortcut
+    reason: str
+    #: The Moonlight name, for progress lines and the ``replace`` event.
+    name: str = ""
+
+
+@dataclass
 class Plan:
     """What one run would do, before it does any of it."""
 
     host: str
     apps: list[moonlight.App]
     ignored: list[moonlight.App] = field(default_factory=list)
-    #: Host apps that already have an owned shortcut (by name or by appid).
+    #: Host apps that already have an owned shortcut (by name or by appid)
+    #: that needs no replacement.
     present: list[moonlight.App] = field(default_factory=list)
-    #: Every owned entry in the library, published or not.
+    #: Every owned entry in the library that stays (published or not), plus
+    #: the client entry; the old half of a replacement and a duplicate's
+    #: entry are not in here.
     adopted: list[Adopted] = field(default_factory=list)
     to_add: list[Addition] = field(default_factory=list)
-    #: New apps beyond ``--limit``, in host-list order, for the next run.
-    pending: list[Addition] = field(default_factory=list)
+    #: New apps and replacements beyond ``--limit``, in host-list order, for
+    #: the next run (``--limit`` counts both together, decky spec 6.13).
+    pending: list[Addition | Replacement] = field(default_factory=list)
     limit: int | None = None
+    #: Moonlight name -> ``stream`` / ``shortcut`` / ``duplicate`` for every
+    #: published, non-ignored name (decky spec 3.4.2).
+    kinds: dict[str, str] = field(default_factory=dict)
+    to_replace: list[Replacement] = field(default_factory=list)
+    #: Losing Moonlight name -> winning Moonlight name (decky spec 3.3).
+    duplicates: dict[str, str] = field(default_factory=dict)
+    #: Owned entries of duplicate titles, removed with their grid files.
+    to_remove: list[Shortcut] = field(default_factory=list)
+    #: In-place ``IsHidden`` flips (decky spec 3.11, 3.12): entries to hide
+    #: and entries to show again. The appid does not change, so no
+    #: replacement, no grid rename, no downloads.
+    to_park: list[Shortcut] = field(default_factory=list)
+    to_unpark: list[Shortcut] = field(default_factory=list)
+    #: Published names whose owned entry is hidden but of kind ``shortcut``
+    #: -- what ``list`` labels ``parked`` (decky spec 3.12); only computed
+    #: when ``--owned-apps`` says what the kinds are.
+    parked_names: set[str] = field(default_factory=set)
+    #: Published names that have an owned entry of any kind right now.
+    existing_names: set[str] = field(default_factory=set)
+    #: The Moonlight client entry (decky spec 3.4.5) already in the library,
+    #: and the one to write when ``--client-shortcut`` asks for it.
+    client: Shortcut | None = None
+    client_to_add: Shortcut | None = None
 
     def label(self, app: moonlight.App) -> str:
         if app in self.ignored:
             return LABEL_IGNORED
-        if app in self.present:
+        if app.name in self.parked_names:
+            return LABEL_PARKED
+        if app in self.present or app.name in self.existing_names:
             return LABEL_ADDED
         return LABEL_NEW
+
+    def kind(self, app: moonlight.App) -> str:
+        """The kind ``list`` reports for a host app (decky spec 3.4.6)."""
+        if app in self.ignored:
+            return KIND_IGNORED
+        if app.name in self.parked_names:
+            return KIND_PARKED
+        return self.kinds.get(app.name, KIND_SHORTCUT)
+
+    @property
+    def stream_count(self) -> int:
+        return sum(1 for kind in self.kinds.values() if kind == KIND_STREAM)
+
+    @property
+    def shortcut_count(self) -> int:
+        return sum(1 for kind in self.kinds.values() if kind == KIND_SHORTCUT)
+
+    @property
+    def parked_count(self) -> int:
+        """Parked entries after the run (decky spec 3.4.6)."""
+        return sum(1 for item in self.adopted if item.kind == KIND_PARKED)
+
+    @property
+    def is_empty(self) -> bool:
+        return not (
+            self.to_add
+            or self.adopted
+            or self.to_replace
+            or self.to_remove
+            or self.to_park
+            or self.to_unpark
+            or self.client_to_add
+        )
 
     def header(self) -> str:
         line = (
             f"{self.host}: {len(self.apps)} app(s) published, {len(self.ignored)} ignored, "
             f"{len(self.present)} already in Steam, {len(self.to_add)} to add"
         )
+        if self.to_replace:
+            line += f", {len(self.to_replace)} to replace"
+        if self.to_remove:
+            line += f", {len(self.to_remove)} to remove"
+        if self.to_park:
+            line += f", {len(self.to_park)} to park"
+        if self.to_unpark:
+            line += f", {len(self.to_unpark)} to unpark"
         if self.pending:
             line += f", {len(self.pending)} pending (--limit {self.limit})"
         return line
@@ -280,58 +461,198 @@ def build_plan(
     *,
     limit: int | None = None,
     ignore_extra: Sequence[str] = (),
+    matches: Mapping[str, Match | None] | None = None,
+    owned: Mapping[int, str] | None = None,
+    park_unpublished: bool = False,
+    client_shortcut: bool = False,
 ) -> Plan:
-    """Diff the host list against the library (spec 3.7).
+    """Diff the host list against the library (spec 3.7, decky spec 3.4.2).
 
     Ignore is matched on the Moonlight app name, exact (spec 3.2), against
     ``config.ignore`` plus ``ignore_extra`` -- the ``--ignore-file`` names
-    (decky spec 3.4.3), a union. Ownership
-    is by ``Exe`` (spec 3.3); the name behind an owned entry is recovered
-    from its launch options. A host app whose would-be appid is already in
-    the file is "the same shortcut" (spec 3.6) even if the name recovery
-    disagrees. Duplicate names in the host list count once.
+    (decky spec 3.4.3), a union. Ownership is by ``Exe`` (spec 3.3); the
+    name behind an owned entry is recovered from its launch options. A host
+    app whose would-be appid is already in the file is "the same shortcut"
+    (spec 3.6) even if the name recovery disagrees. Duplicate names in the
+    host list count once.
+
+    ``matches`` (Moonlight name -> the title's :class:`Match`, or ``None``)
+    and ``owned`` (Steam appid -> display name, from ``--owned-apps``)
+    decide each published name's *kind* (decky spec 3.2): a title whose
+    match is a Steam game in ``owned`` -- by an exact or pinned match, never
+    a fuzzy one -- is ``stream`` and gets a hidden entry named after the
+    owned game (3.3); the first such title per owned game wins and later
+    ones are ``duplicate`` (no entry; an existing one is removed with its
+    art); everything else is ``shortcut``. Without ``owned`` every kind is
+    ``shortcut`` and the plan is v0.2.0's, except that a title whose match
+    carries ``stale_art`` (``match --defer-art``, 3.4.4) becomes a
+    ``rematched`` replacement whatever its name, so its art is re-fetched.
+
+    Per published name, an existing entry whose ``AppName`` is not the one
+    its kind wants is a :class:`Replacement` (``kind-changed`` /
+    ``name-changed``); one that only differs in ``IsHidden`` is flipped in
+    place (:attr:`Plan.to_park` / :attr:`Plan.to_unpark`, decky spec 3.11)
+    -- both only once ``owned`` is given, since v0.2.0 adopted an entry
+    under any name. ``--limit`` counts additions and replacements together,
+    in host-list order, and never splits a replacement or counts a flip.
+
+    With ``park_unpublished`` (decky spec 3.12) every owned entry the host
+    does not publish is hidden in place, and a hidden ``shortcut``-kind
+    entry the host does publish is shown again. With ``client_shortcut``
+    the Moonlight client entry (3.4.5) is added when missing; it is always
+    listed under ``adopted`` (kind ``client``) when present, whoever
+    ``config.exe`` is.
     """
-    owned = shortcuts_file.owned(config.exe)
+    tool_exe = default_exe()
+    client = shortcuts_file.client_entry(tool_exe)
+    owned_entries = [s for s in shortcuts_file.owned(config.exe) if s is not client]
     owned_by_name: dict[str, Shortcut] = {}
-    for entry in owned:
+    names_of: dict[int, str] = {}
+    for entry in owned_entries:
         name = entry.moonlight_name(config.launch_options, config.name_suffix)
+        names_of[id(entry)] = name
         owned_by_name.setdefault(name, entry)
 
-    plan = Plan(host=config.host, apps=list(apps), limit=limit)
+    matches = matches or {}
+    plan = Plan(host=config.host, apps=list(apps), limit=limit, client=client)
+    if client_shortcut and client is None:
+        plan.client_to_add = client_shortcut_entry()
     ignore = set(config.ignore) | set(ignore_extra)
     seen: set[str] = set()
     apps_by_name: dict[str, moonlight.App] = {}
-    additions: list[Addition] = []
+    changes: list[Addition | Replacement] = []
+    taken: dict[int, str] = {}
+    replaced_or_removed: set[int] = set()
+    naming_active = owned is not None
     for app in apps:
-        if app.name in seen:
+        name = app.name
+        if name in seen:
             continue
-        seen.add(app.name)
-        apps_by_name[app.name] = app
-        if app.name in ignore:
+        seen.add(name)
+        apps_by_name[name] = app
+        if name in ignore:
             plan.ignored.append(app)
             continue
-        if app.name in owned_by_name:
-            plan.present.append(app)
+
+        match = matches.get(name)
+        kind, owned_name = KIND_SHORTCUT, None
+        if (
+            owned
+            and match is not None
+            and match.steam_appid is not None
+            and match.steam_appid in owned
+            and match.how in STREAM_HOWS
+        ):
+            kind, owned_name = KIND_STREAM, owned[match.steam_appid]
+        entry = owned_by_name.get(name)
+        if entry is not None:
+            plan.existing_names.add(name)
+        if kind == KIND_STREAM:
+            assert match is not None and match.steam_appid is not None
+            winner = taken.get(match.steam_appid)
+            if winner is not None:
+                # Decky spec 3.3 / decision 14: the first title in host-list
+                # order gets the hidden entry; a later one is almost always
+                # a wrong match, so it gets no tile at all.
+                plan.kinds[name] = KIND_DUPLICATE
+                plan.duplicates[name] = winner
+                if entry is not None:
+                    plan.to_remove.append(entry)
+                    replaced_or_removed.add(id(entry))
+                continue
+            taken[match.steam_appid] = name
+        plan.kinds[name] = kind
+
+        desired = new_shortcut(config, name, kind=kind, owned_name=owned_name)
+        if entry is None:
+            entry = shortcuts_file.by_appid(desired.appid)
+            if entry is not None:
+                plan.existing_names.add(name)
+        stale = bool(match is not None and match.stale_art)
+        if entry is None:
+            changes.append(Addition(app=app, shortcut=desired))
             continue
-        shortcut = new_shortcut(config, app.name)
-        if shortcuts_file.by_appid(shortcut.appid) is not None:
+        same_name = entry.app_name == desired.app_name
+        hidden_now, hidden_wanted = bool(entry.is_hidden), bool(desired.is_hidden)
+        if stale or (naming_active and not same_name):
+            if stale:
+                reason = REASON_REMATCHED
+            elif hidden_now != hidden_wanted:
+                reason = REASON_KIND_CHANGED
+            else:
+                reason = REASON_NAME_CHANGED
+            changes.append(Replacement(old=entry, new=desired, reason=reason, name=name))
+            replaced_or_removed.add(id(entry))
+        else:
             plan.present.append(app)
-            continue
-        additions.append(Addition(app=app, shortcut=shortcut))
+            if same_name and hidden_now != hidden_wanted and (naming_active or park_unpublished):
+                # Decky spec 3.11: IsHidden is the one field edited in place.
+                (plan.to_park if hidden_wanted else plan.to_unpark).append(entry)
+        if hidden_now and kind == KIND_SHORTCUT and naming_active:
+            plan.parked_names.add(name)
 
     if limit is not None and limit >= 0:
-        plan.to_add, plan.pending = additions[:limit], additions[limit:]
+        to_do, plan.pending = changes[:limit], changes[limit:]
     else:
-        plan.to_add = additions
+        to_do = changes
+    for change in to_do:
+        if isinstance(change, Addition):
+            plan.to_add.append(change)
+        else:
+            plan.to_replace.append(change)
+    for change in plan.pending:
+        if isinstance(change, Replacement):
+            # Not this run: the old entry stays exactly as it is.
+            replaced_or_removed.discard(id(change.old))
 
-    for entry in owned:
-        name = entry.moonlight_name(config.launch_options, config.name_suffix)
-        plan.adopted.append(Adopted(shortcut=entry, name=name, app=apps_by_name.get(name)))
+    for entry in owned_entries:
+        if id(entry) in replaced_or_removed:
+            continue
+        name = names_of[id(entry)]
+        app = apps_by_name.get(name)
+        if app is None:
+            # Not published by the active host (decky spec 3.12).
+            if park_unpublished and not entry.is_hidden:
+                plan.to_park.append(entry)
+            kind = KIND_PARKED if (park_unpublished or entry.is_hidden) else KIND_SHORTCUT
+        else:
+            kind = plan.kinds.get(name, KIND_SHORTCUT)
+            if kind == KIND_DUPLICATE:
+                kind = KIND_SHORTCUT
+        plan.adopted.append(Adopted(shortcut=entry, name=name, app=app, kind=kind))
+    if client is not None:
+        plan.adopted.append(
+            Adopted(shortcut=client, name=CLIENT_APP_NAME, app=None, kind=KIND_CLIENT)
+        )
     return plan
 
 
-def new_shortcut(config: Config, name: str) -> Shortcut:
-    """The entry ``sync`` writes for a Moonlight app (spec 3.6 write policy)."""
+def new_shortcut(
+    config: Config,
+    name: str,
+    *,
+    kind: str = KIND_SHORTCUT,
+    owned_name: str | None = None,
+) -> Shortcut:
+    """The entry ``sync`` writes for a Moonlight app (spec 3.6 write policy).
+
+    A ``stream`` title (decky spec 3.3) gets a *hidden* entry whose
+    ``AppName`` is the owned game's display name, exactly as the plugin
+    reported it and with no ``name_suffix``: Steam Input keys a shortcut's
+    layout by its lowercased name, so a same-named shortcut is offered the
+    retail game's layouts for free. The launch options still carry the
+    Moonlight name, which is what ownership and the plan recover.
+    """
+    if kind == KIND_STREAM:
+        assert owned_name is not None
+        shortcut = Shortcut.create(
+            app_name=owned_name,
+            exe=config.exe,
+            start_dir=config.start_dir,
+            launch_options=render_launch_options(config.launch_options, name),
+        )
+        shortcut.is_hidden = 1
+        return shortcut
     return Shortcut.create(
         app_name=app_name_for(name, config.name_suffix),
         exe=config.exe,
@@ -340,17 +661,129 @@ def new_shortcut(config: Config, name: str) -> Shortcut:
     )
 
 
+def client_shortcut_entry() -> Shortcut:
+    """The Moonlight client shortcut ``sync --client-shortcut`` writes (decky
+    spec 3.4.5): hidden, ``AppName = "Moonlight"``, ``Exe`` the tool's own
+    path -- always, even when ``config.exe`` is a user script that would
+    not understand ``client`` -- and ``LaunchOptions = "client"``."""
+    shortcut = Shortcut.create(
+        app_name=CLIENT_APP_NAME,
+        exe=default_exe(),
+        launch_options=CLIENT_LAUNCH_OPTIONS,
+    )
+    shortcut.is_hidden = 1
+    return shortcut
+
+
+def resolve_titles(
+    names: Sequence[str], resolver: Resolver, *, out: TextIO | None = None
+) -> dict[str, Match]:
+    """Resolve every title before the plan is built (decky spec 3.4.2).
+
+    Cache-first; each miss makes the same lookups the art phase would, and
+    the cache is flushed per title, so an interrupted run resumes. The art
+    phase then finds every title cached and makes no lookup of its own. A
+    title that cost a lookup gets one progress line on ``out``.
+    :class:`~moonlight_steam_sync.art.http.HardStop` and
+    ``KeyboardInterrupt`` propagate with everything so far on disk.
+    """
+    matches: dict[str, Match] = {}
+    total = len(names)
+    for index, name in enumerate(names, start=1):
+        cached = resolver.cache.get(name)
+        match = resolver.resolve(name)
+        matches[name] = match
+        if out is not None and match is not cached:
+            how = match.how if not match.transient else f"{match.how} (lookup failed, not cached)"
+            print(f"resolve [{index}/{total}] {name}: {how}", file=out)
+    return matches
+
+
 def art_targets(plan: Plan, grid_dir: Path) -> list[ArtTarget]:
-    """Every adopted and every planned shortcut, adopted first (spec 3.6)."""
+    """Every adopted entry, every replacement's new entry and every planned
+    shortcut, in that order (spec 3.6) -- never the client entry (decky
+    spec 3.4.5: no lookups for "Moonlight")."""
     targets = [
-        ArtTarget(name=item.name, appid=item.shortcut.appid, grid_dir=grid_dir)
+        ArtTarget(
+            name=item.name,
+            appid=item.shortcut.appid,
+            grid_dir=grid_dir,
+            hidden=bool(item.shortcut.is_hidden),
+            app_name=item.shortcut.app_name,
+            kind=item.kind,
+        )
         for item in plan.adopted
+        if item.kind != KIND_CLIENT
     ]
     targets.extend(
-        ArtTarget(name=item.app.name, appid=item.shortcut.appid, grid_dir=grid_dir)
+        ArtTarget(
+            name=item.name,
+            appid=item.new.appid,
+            grid_dir=grid_dir,
+            hidden=bool(item.new.is_hidden),
+            app_name=item.new.app_name,
+            kind=plan.kinds.get(item.name, KIND_SHORTCUT),
+        )
+        for item in plan.to_replace
+    )
+    targets.extend(
+        ArtTarget(
+            name=item.app.name,
+            appid=item.shortcut.appid,
+            grid_dir=grid_dir,
+            hidden=bool(item.shortcut.is_hidden),
+            app_name=item.shortcut.app_name,
+            kind=plan.kinds.get(item.app.name, KIND_SHORTCUT),
+        )
         for item in plan.to_add
     )
     return targets
+
+
+def apply_replacement(replacement: Replacement, library: Library) -> None:
+    """Swap the entry in memory and move its art on disk (decky spec 3.4.2).
+
+    The vdf change is in memory only until :func:`commit_shortcuts`; the
+    grid files are renamed (``os.replace``) to the new appid *now*, before
+    the art phase, so a kind flip costs zero downloads. Idempotent for the
+    rerun after a crash: a rename whose source is gone and whose target
+    exists is done, and a target that already exists is never overwritten
+    (the stray source is dropped). A ``rematched`` replacement deletes the
+    old files instead, because that art belongs to the old match.
+    """
+    library.file.remove(replacement.old)
+    library.file.append(replacement.new)
+    old_appid, new_appid = replacement.old.appid, replacement.new.appid
+    if replacement.reason == REASON_REMATCHED:
+        delete_grid_files(library.grid_dir, old_appid)
+        if new_appid != old_appid:
+            delete_grid_files(library.grid_dir, new_appid)
+        return
+    if new_appid == old_appid:
+        return
+    for slot in steam.GRID_SLOTS:
+        part = library.grid_dir / f"{steam.grid_stem(old_appid, slot)}.part"
+        with contextlib.suppress(OSError):
+            part.unlink()
+        source = steam.find_grid_file(library.grid_dir, old_appid, slot)
+        if source is None:
+            continue
+        if steam.find_grid_file(library.grid_dir, new_appid, slot) is not None:
+            with contextlib.suppress(OSError):
+                source.unlink()
+            continue
+        target = source.with_name(f"{steam.grid_stem(new_appid, slot)}{source.suffix}")
+        os.replace(source, target)
+
+
+def delete_grid_files(grid_dir: Path, appid: int) -> int:
+    """Delete the five grid files (and any ``.part``) for ``appid``; returns how many went."""
+    deleted = 0
+    for path in grid_files_for(grid_dir, appid):
+        with contextlib.suppress(OSError):
+            path.unlink()
+            deleted += 1
+    return deleted
 
 
 def patch_icons_from_disk(shortcuts_file: ShortcutsFile, targets: Sequence[ArtTarget]) -> int:

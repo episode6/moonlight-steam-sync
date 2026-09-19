@@ -44,6 +44,8 @@ from moonlight_steam_sync import vdf
 
 __all__ = [
     "BACKUP_PREFIX",
+    "CLIENT_APP_NAME",
+    "CLIENT_LAUNCH_OPTIONS",
     "FIELDS",
     "ROOT_KEY",
     "Shortcut",
@@ -65,6 +67,13 @@ ROOT_KEY = "shortcuts"
 #: Backups are ``shortcuts.vdf.bak-<UTC ISO basic timestamp>`` (spec 3.6).
 BACKUP_PREFIX = ".bak-"
 BACKUP_KEEP = 5
+
+#: The Moonlight client shortcut (decky spec 3.4.5): ``AppName`` and
+#: ``LaunchOptions`` of the one hidden entry ``sync --client-shortcut``
+#: writes. It is *identified* by its launch options and its ``Exe`` (the
+#: tool itself), never by the name.
+CLIENT_APP_NAME = "Moonlight"
+CLIENT_LAUNCH_OPTIONS = "client"
 
 #: ``(vdf key, attribute, kind)`` in the order Steam writes them (spec 2.1).
 #: ``kind`` is ``"str"``, ``"i32"`` or ``"map"``.
@@ -340,6 +349,15 @@ class Shortcut:
             return False
         return os.path.realpath(mine) == os.path.realpath(unquote(exe))
 
+    def is_client_entry(self, tool_exe: str) -> bool:
+        """The Moonlight client shortcut (decky spec 3.4.5)?
+
+        ``LaunchOptions == "client"`` and ``Exe`` is *tool_exe* (the tool's
+        own path, ``config.default_exe()``), compared like :meth:`is_owned_by`
+        -- never the name, which a user may edit.
+        """
+        return self.launch_options == CLIENT_LAUNCH_OPTIONS and self.is_owned_by(tool_exe)
+
     # -- serialisation --------------------------------------------------
 
     def to_mapping(self) -> dict[str, Any]:
@@ -478,6 +496,14 @@ class ShortcutsFile:
     def owned(self, exe: str) -> list[Shortcut]:
         """Entries whose ``Exe`` resolves to *exe* (spec 3.3 ownership)."""
         return [s for s in self.shortcuts if s.is_owned_by(exe)]
+
+    def client_entry(self, tool_exe: str) -> Shortcut | None:
+        """The Moonlight client shortcut, whoever the configured ``exe`` is
+        (decky spec 3.4.5: it always points at the tool itself), or ``None``."""
+        for shortcut in self.shortcuts:
+            if shortcut.is_client_entry(tool_exe):
+                return shortcut
+        return None
 
     def by_appid(self, wanted: int) -> Shortcut | None:
         """The entry with this appid, or ``None`` -- the "same shortcut" test (spec 3.6)."""

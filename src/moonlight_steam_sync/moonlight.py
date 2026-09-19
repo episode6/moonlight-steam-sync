@@ -146,3 +146,21 @@ def stream(host: str, name: str, extra_args: Sequence[str] = ()) -> None:
 
     argv = [*binary, "stream", host, name, *extra_args]
     os.execvp(argv[0], argv)
+
+
+def run_client(extra_args: Sequence[str] = ()) -> None:
+    """`exec` into the Moonlight GUI itself, with no host or app (decky spec
+    3.4.5's `client` subcommand): the hidden "Moonlight" shortcut `sync
+    --client-shortcut` writes launches this, so *Open Moonlight* in Game
+    Mode is a Steam-launched app like any other. Same binary discovery as
+    :func:`stream`; raises :class:`MoonlightNotFoundError` when there is no
+    binary, and does not return on success.
+    """
+    binary = find_binary()
+    if binary is None:
+        raise MoonlightNotFoundError(
+            "moonlight CLI not found (native binary, flatpak, or MOONLIGHT_BIN)"
+        )
+
+    argv = [*binary, *extra_args]
+    os.execvp(argv[0], argv)
