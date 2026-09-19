@@ -713,13 +713,17 @@ def cmd_match(
             hosts.read_host_cache(deps.resolved_hosts_dir(), config.host) if config.host else None
         )
         if host_cache is None or name not in host_cache.apps:
-            where = (
-                f"{config.host}'s cached app list"
-                if host_cache is not None
-                else "any cached app list"
-            )
+            if not config.host:
+                why = "no host is configured"
+            elif host_cache is None:
+                why = (
+                    f"there is no cached app list for host {config.host} "
+                    f"(run `list --host {config.host}`)"
+                )
+            else:
+                why = f"{config.host}'s cached app list does not have it"
             reporter.error(
-                f"match: {name!r} has no owned shortcut and is not in {where}; "
+                f"match: no owned shortcut named {name!r}, and {why}; "
                 "pass --force-name to pin it anyway",
                 EXIT_USAGE_OR_CONFIG,
             )
