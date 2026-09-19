@@ -2,7 +2,10 @@
 
 Every subcommand in spec 3.3 is wired: ``doctor``, ``launch``, ``art`` and
 ``status`` to their own modules, and ``sync`` / ``list`` / ``ignore`` /
-``remove`` to the orchestration in :mod:`moonlight_steam_sync.sync`.
+``remove`` to the orchestration in :mod:`moonlight_steam_sync.sync`. The
+Decky-plugin additions (decky spec 3.4) follow the same split: ``search``
+and ``match`` live in :mod:`moonlight_steam_sync.art.cli`, ``host`` in
+:mod:`moonlight_steam_sync.hosts`.
 
 SIGINT: Python's default ``KeyboardInterrupt`` is what the long-running
 commands rely on. ``run_art`` catches it around each title so the match
@@ -24,11 +27,18 @@ from pathlib import Path
 from typing import TextIO
 
 from moonlight_steam_sync import __version__, hosts, moonlight, steam, sync
-from moonlight_steam_sync.art.cli import ProviderFactory, cmd_art, cmd_search, cmd_status
+from moonlight_steam_sync.art.cli import (
+    ProviderFactory,
+    cmd_art,
+    cmd_match,
+    cmd_search,
+    cmd_status,
+)
 from moonlight_steam_sync.config import (
     DEFAULT_KEY_FILE,
     ConfigError,
     load_config,
+    load_ignore_file,
     load_owned_apps,
     owned_apps_steamid3,
     toml_host,
@@ -66,6 +76,17 @@ def _version() -> str:
 
 def _add_common_host_flag(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--host", help="Moonlight host name (overrides config)")
+
+
+def _add_ignore_file_flag(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--ignore-file",
+        metavar="PATH",
+        help=(
+            "a JSON list of Moonlight names to ignore on top of config.toml's "
+            "`ignore` (spec 3.4.3)"
+        ),
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -108,14 +129,16 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="never stop or start Steam; exit 2 instead of writing while it runs",
     )
+    _add_ignore_file_flag(sync_p)
 
     art_p = sub.add_parser("art", help="(re)apply art to owned shortcuts")
     art_p.add_argument(
         "--force",
         action="store_true",
         help=(
-            "re-fetch every slot, ignoring the match cache, and replace the files "
-            "already in grid/ (a slot ends up with exactly one file)"
+            "re-fetch every slot, ignoring the match cache (except titles pinned with "
+            "`match`), and replace the files already in grid/ (a slot ends up with "
+            "exactly one file)"
         ),
     )
     art_p.add_argument(
@@ -139,6 +162,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="serve the per-host list cache instead of running moonlight (spec 3.12)",
     )
+    _add_ignore_file_flag(list_p)
 
     status_p = sub.add_parser(
         "status", help="owned shortcuts and which art slots each has on disk"
@@ -152,6 +176,49 @@ def build_parser() -> argparse.ArgumentParser:
     search_p.add_argument("term")
     search_p.add_argument(
         "--owned-apps", metavar="PATH", help="a plugin-written owned-apps JSON file (spec 3.4.1)"
+    )
+
+    match_p = sub.add_parser(
+        "match",
+        help="pin what a Moonlight title is matched to (or unpin it); see `match --help`",
+        description=(
+            "Pin a title's match in the match cache (matches.json): `art --force` and "
+            "--retry-missing never overwrite a pin, while an [overrides] entry in "
+            "config.toml still wins over it. Prints the equivalent [overrides] line, "
+            "which you can paste into config.toml to make the pin permanent (this tool "
+            "never writes it). When the title has a shortcut, its grid files are deleted "
+            "and its icon cleared now (one Steam restart, like `remove`) unless "
+            "--defer-art leaves that to the next `sync`."
+        ),
+    )
+    match_p.add_argument("name", metavar="NAME", help="the Moonlight app name, exactly")
+    match_group = match_p.add_mutually_exclusive_group(required=True)
+    match_group.add_argument(
+        "--steam", type=int, metavar="APPID", help="pin this Steam appid"
+    )
+    match_group.add_argument(
+        "--sgdb", type=int, metavar="ID", help="pin this SteamGridDB game id"
+    )
+    match_group.add_argument(
+        "--none", action="store_true", help='pin "no match" (no lookups, no art)'
+    )
+    match_group.add_argument(
+        "--unpin",
+        action="store_true",
+        help="forget the title's match so the next run resolves it again",
+    )
+    match_p.add_argument(
+        "--defer-art",
+        action="store_true",
+        help=(
+            "only write the cache (marking the art stale); the next `sync` replaces the "
+            "art, so Steam is not restarted now"
+        ),
+    )
+    match_p.add_argument(
+        "--force-name",
+        action="store_true",
+        help="accept a name the host does not publish (yet) and no shortcut carries",
     )
 
     host_p = sub.add_parser("host", help="show or change the active Moonlight host (spec 3.12)")
@@ -171,6 +238,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--all", action="store_true", help="every host app that has no shortcut yet"
     )
     ignore_group.add_argument("names", nargs="*", default=[], metavar="NAME")
+    _add_ignore_file_flag(ignore_p)
 
     remove_p = sub.add_parser("remove", help="delete owned shortcuts and their grid files")
     remove_group = remove_p.add_mutually_exclusive_group(required=True)
@@ -187,6 +255,7 @@ def build_parser() -> argparse.ArgumentParser:
     doctor_p.add_argument(
         "--owned-apps", metavar="PATH", help="a plugin-written owned-apps JSON file (spec 3.4.1)"
     )
+    _add_ignore_file_flag(doctor_p)
 
     return parser
 
@@ -242,9 +311,10 @@ def cmd_doctor(
     python, moonlight path, key present?, steam running?
 
     Spec 3.4.7 appends three more lines unconditionally (``session:``,
-    ``active host:``, ``cached hosts:``) and an ``owned-apps file:`` line
-    when ``--owned-apps`` is given; ``doctor`` never exits 1 over a bad
-    file, since it is a diagnostic.
+    ``active host:``, ``cached hosts:``), an ``owned-apps file:`` line
+    when ``--owned-apps`` is given and an ``ignore file:`` line when
+    ``--ignore-file`` is; ``doctor`` never exits 1 over a bad file, since
+    it is a diagnostic.
 
     Under ``--json`` (spec 3.4.6): the report moves to stderr (one line at a
     time -- the same bytes as the single joined ``print`` below, just split
@@ -298,6 +368,16 @@ def cmd_doctor(
             lines.append(
                 f"owned-apps file: {owned_path} ({len(apps)} apps, steamid3 {steamid3_text})"
             )
+
+    ignore_file_flag = getattr(args, "ignore_file", None)
+    if ignore_file_flag:
+        ignore_path = Path(ignore_file_flag)
+        try:
+            ignored = load_ignore_file(ignore_path)
+        except ConfigError as exc:
+            lines.append(f"ignore file: {ignore_path} (invalid: {exc})")
+        else:
+            lines.append(f"ignore file: {ignore_path} ({len(ignored)} names)")
 
     for line in lines:
         reporter.line(line)
@@ -396,6 +476,8 @@ def main(
             )
         if args.command == "search":
             return cmd_search(args, load_config(args), cache_path=deps.cache_path)
+        if args.command == "match":
+            return cmd_match(args, load_config(args), deps=deps)
         if args.command == "host":
             cfg = load_config(args)
             return hosts.cmd_host(
