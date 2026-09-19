@@ -40,8 +40,10 @@ flags below are passed and no title has been pinned.
   files and icon so the next `sync` fetches the new match's art (one Steam
   restart, like `remove`); `--defer-art` instead only marks the cached
   entry `stale_art` (acted on by `sync` in a later change) and leaves Steam
-  alone. `--force-name` accepts a title the host does not publish yet.
-  Under `--json` it emits a `pinned` event.
+  alone. The mark survives re-resolution: `--unpin --defer-art` leaves a
+  `"how": "unpinned"` placeholder that carries it, and the next run's
+  search inherits it. `--force-name` accepts a title the host does not
+  publish yet. Under `--json` it emits a `pinned` event.
 - `--ignore-file PATH` on `sync`, `list` and `ignore`: a JSON list of
   Moonlight names ignored together with `config.toml`'s `ignore` (the
   union), so the Decky plugin can keep its own ignore list without editing

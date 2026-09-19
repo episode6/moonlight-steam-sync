@@ -308,7 +308,10 @@ same one-restart write as `remove` (exit `2`, with nothing changed at all,
 when Steam is running and `restart_steam = false`); the next `sync` fetches
 the new match's art. `--defer-art` leaves the files and Steam alone and
 only marks the title's art as stale in the cache, for a later `sync` to
-replace. The name must be one the host publishes (as of its last `list` or
+replace; that mark outlives the entry it was set on, so `--unpin
+--defer-art` (which leaves an `"how": "unpinned"` placeholder in the
+cache) and the re-resolution that follows still end with the art marked
+stale. The name must be one the host publishes (as of its last `list` or
 `sync`) or one that already has a shortcut; `--force-name` pins a title the
 host will publish later.
 
