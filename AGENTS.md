@@ -15,6 +15,15 @@ exactly the way Steam's UI and tools like SGDBoop write it. See
 `~/specs/moonlight-steam-sync/initial-build.md` (sections 2 and 3) for the
 full design; this file is the day-to-day operating summary.
 
+A second spec, `~/specs/moonlight-steam-sync/decky-plugin.md`, is in
+progress on top of that build: a Decky Loader plugin that runs `sync` from
+Game Mode and stops creating visible shortcuts for games the Deck's own
+Steam account already owns. Its CLI half lands as a stack of PRs behind new,
+additive flags (`--json`, `--owned-apps`, `host`, `search`, `match`,
+`--commit`, ...); until it lands in full, every command's behaviour with
+none of those flags passed stays byte-identical to the release before it
+started (spec 3.11).
+
 ## Hard rules
 
 - **Python 3.11 floor.** `tomllib` (stdlib, 3.11+) is what makes a
@@ -59,6 +68,9 @@ moonlight_steam_sync/
                    grid paths, is_running(), shutdown()/relaunch()
   moonlight.py     find binary (native `moonlight`, else flatpak), list(host) -> [App(name)],
                    stream(host, name, extra)
+  hosts.py         active-host state file (read/write/clear_active_host); per-host `moonlight list`
+                   cache (slug, HostCache, list_cached_hosts); `host show|set|clear` (cmd_host)
+  reporting.py     Reporter: the `--json` event stream shared by sync.py and art/cli.py
   art/
     http.py        urllib transport seam, User-Agent, timeouts, pacing, backoff, the 429 hard stop
     sgdb.py        API client (urllib): search, game(platformdata), grids/heroes/logos/icons
@@ -66,14 +78,21 @@ moonlight_steam_sync/
     resolve.py     title -> Match{steam_appid?, sgdb_id?, how}; match cache (flushed per title)
     select.py      per-slot asset choice policy; download; mime sniff -> ext
     apply.py       write grid files for an appid (skip existing), set icon field
-    cli.py         the `art` and `status` subcommands
+    cli.py         the `art`, `status` and `search` subcommands
   sync.py          the orchestration: list -> diff -> art -> write -> restart; progress lines
 ```
 
 `art/http.py` and `art/cli.py` are two small additions to the spec 3.4 map:
 one place for the shared urllib/pacing/backoff plumbing so `sgdb.py` and
 `steamstore.py` stay thin, and one place for the argparse glue so
-`__main__.py` stays a dispatcher.
+`__main__.py` stays a dispatcher. `hosts.py` and `reporting.py` (added for
+the Decky-plugin CLI work, see
+`~/specs/moonlight-steam-sync/decky-plugin.md`) follow the same rule:
+`hosts.py` imports nothing from `config` or `sync` so both can import it
+back, and `reporting.py` holds `Reporter` (the `--json` event stream, spec
+3.4.6) because `sync.py` imports `art/cli.py`, so `art/cli.py` cannot import
+`sync.py`'s copy back -- one shared module instead of two Reporters
+drifting apart.
 
 `__main__.py` and `config.py` landed in PR-1; `vdf.py`, `shortcuts.py` and
 `steam.py` (the whole Steam side) in PR-2; `moonlight.py` (binary discovery,

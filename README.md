@@ -149,15 +149,21 @@ landscape art that shares its name.
 ## Usage
 
 ```
-moonlight-steam-sync sync      [--host H] [--dry-run] [--no-art] [--limit N] [--retry-missing] [--no-restart-steam]
-moonlight-steam-sync art       [--force] [--retry-missing] [--only "Name"] [--explain]
-moonlight-steam-sync list      [--host H]
-moonlight-steam-sync status
-moonlight-steam-sync ignore    --all | "Name"...
-moonlight-steam-sync remove    --all | "Name"...
-moonlight-steam-sync launch    "Name" [-- extra moonlight flags]
-moonlight-steam-sync doctor
+moonlight-steam-sync [--json] sync      [--host H] [--dry-run] [--no-art] [--limit N] [--retry-missing] [--no-restart-steam]
+moonlight-steam-sync [--json] art       [--force] [--retry-missing] [--only "Name"] [--explain]
+moonlight-steam-sync [--json] list      [--host H] [--cached]
+moonlight-steam-sync [--json] status    [--host H] [--owned-apps PATH]
+moonlight-steam-sync [--json] search    "term" [--owned-apps PATH]
+moonlight-steam-sync [--json] host      show [--host H] | set NAME | clear
+moonlight-steam-sync [--json] ignore    --all | "Name"...
+moonlight-steam-sync [--json] remove    --all | "Name"...
+moonlight-steam-sync         launch    "Name" [-- extra moonlight flags]
+moonlight-steam-sync         doctor    [--host H] [--owned-apps PATH]
 ```
+
+`--json`, before the subcommand, switches every command to the
+machine-readable event stream described below; it is meant for the Decky
+plugin driving the CLI as a subprocess, not for interactive use.
 
 ### A first import
 
@@ -209,7 +215,33 @@ After `4` or `130`, rerun the same command to continue.
   an error before anything happens.
 - `list --host H` prints every app the host publishes with `added`,
   `ignored` or `new` in front of it, and the same totals line `sync` starts
-  with.
+  with. `list --cached` never asks the host at all: it serves the per-host
+  list cache that `sync`, `list` and `ignore --all` write on every
+  successful run (`<cache dir>/hosts/<slug>.json`), so a Decky plugin can
+  show a host's titles while it is unreachable; it exits `3` with no result
+  when nothing has ever been cached for that host.
+- `search "term"` looks a title up the same way `sync`'s art phase does --
+  SteamGridDB (when a key is configured) then Steam's own store -- and
+  prints the candidates without writing anything, for fixing a wrong match
+  by hand or from the plugin's Titles page (`match`, arriving in a later
+  release, applies the pick).
+
+### Multiple hosts
+
+`launch`, `sync`, `list`, `ignore` and `status` resolve which host to talk
+to in this order: the `--host` flag, then an *active host* set with `host
+set NAME`, then `host` in `config.toml`. The active host is a small state
+file (`$XDG_STATE_HOME/moonlight-steam-sync/active-host`, not
+`config.toml`), so switching hosts never edits the config:
+
+```sh
+moonlight-steam-sync host show      # the resolved host and where it came from
+moonlight-steam-sync host set OFFICE-PC
+moonlight-steam-sync host clear     # back to config.toml's `host`
+```
+
+`--host` on `list`, `status`, `ignore` or `doctor` is per-invocation and
+never touches the state file -- only `host set` does.
 
 ### Artwork
 
@@ -256,6 +288,42 @@ The tool paces itself between calls (`request_interval_ms`), backs off on
 your API key -- or after five network failures in a row, which is the Wi-Fi
 having gone rather than the art being missing. Either way everything already
 written is kept, and re-running the same command picks up where it left off.
+
+## Machine-readable output
+
+`--json` (before the subcommand) switches stdout to one JSON object per
+line and nothing else; every human progress line that would otherwise go to
+stdout moves to stderr instead, so a caller can read stdout with a plain
+line-oriented JSON parser while still showing the human text if it wants to.
+This is what the in-progress Decky plugin drives the CLI with.
+
+Every object has an `"event"` key. The stream always starts with `start`
+(`schema`, `version`, `command`) and ends with `error` on a non-zero exit
+(`exit`, `message` -- the same text that went to stderr). A `note` event
+carries a message that would otherwise only be a `note:` line on stderr
+(no SteamGridDB key configured, "restart Steam to see the new artwork",
+and so on).
+
+| command | events, in order |
+|---|---|
+| `sync` | `start`, `plan`, `title`\*, `commit`\*, `summary`, (`error`) |
+| `art` | `start`, `title`\*, `commit`, `summary`, (`error`) |
+| `list` | `start`, `app`\*, `end`, (`error`) |
+| `status` | `start`, `entry`\*, `end`, (`error`) |
+| `search` | `start`, `candidate`\*, `end`, (`error`) |
+| `host` | `start`, `host`, (`error`) |
+| `ignore` | `start`, `end`, (`error`) |
+| `remove` | `start`, `commit`, `summary`, (`error`) |
+| `launch` | `start`, `exec`, (`error`) |
+
+`title`/`app`/`entry` all carry a `match` object shaped
+`{steam_appid, sgdb_id, matched_name, how}` (or `null`), and a `slots`
+mapping whose values are `steam`, `sgdb`, `kept`, `missing`, `skipped` or
+`cached-miss` -- the JSON names for what the human progress line prints as
+`official`/`community`/etc. See
+`~/specs/moonlight-steam-sync/decky-plugin.md` section 3.4.6 for the full
+schema (every event's exact keys) if you are building another consumer of
+this stream; it is versioned (`schema: 1`) and additive-only.
 
 ## Development
 
