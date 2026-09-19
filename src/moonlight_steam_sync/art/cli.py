@@ -1,8 +1,9 @@
-"""The ``art`` and ``status`` subcommands (spec 3.3).
+"""The ``art``, ``status``, ``search`` and ``match`` subcommands (spec 3.3,
+decky spec 3.4.4/3.4.6).
 
 Kept next to the artwork code rather than in ``__main__`` so the entry point
 stays a dispatcher: ``__main__`` parses flags and calls :func:`cmd_art` /
-:func:`cmd_status`.
+:func:`cmd_status` / :func:`cmd_search` / :func:`cmd_match`.
 
 Both commands need the owned shortcuts, which come from the shortcut layer
 through :class:`~moonlight_steam_sync.art.apply.TargetProvider`. Callers
@@ -13,11 +14,13 @@ exit 1 rather than guess.
 from __future__ import annotations
 
 import argparse
+import contextlib
+import json
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, TextIO
+from typing import TYPE_CHECKING, Any, TextIO
 
 from moonlight_steam_sync import hosts, steam
 from moonlight_steam_sync import version as _pkg_version
@@ -31,12 +34,15 @@ from moonlight_steam_sync.art.apply import (
     slot_report,
 )
 from moonlight_steam_sync.art.http import Fetcher, HardStop, HttpError
-from moonlight_steam_sync.art.resolve import MatchCache, Resolver, default_cache_path
+from moonlight_steam_sync.art.resolve import Match, MatchCache, Resolver, default_cache_path
 from moonlight_steam_sync.art.select import SLOTS, Selector
 from moonlight_steam_sync.art.sgdb import SgdbClient, steam_appid_from_game
 from moonlight_steam_sync.art.steamstore import SteamStoreClient
 from moonlight_steam_sync.config import Config, ConfigError, load_owned_apps, owned_apps_steamid3
 from moonlight_steam_sync.reporting import Reporter, match_json, slot_json_value
+
+if TYPE_CHECKING:  # ``sync`` imports this module, so only for annotations.
+    from moonlight_steam_sync.sync import Deps
 
 # Copied rather than imported from ``__main__`` (which imports this module).
 EXIT_OK = 0
@@ -403,7 +409,7 @@ def cmd_status(
             client=False,
             match=match_json(match_entry),
             slots={key: (None if value == "-" else value) for key, value in report.items()},
-            stale_art=False,
+            stale_art=bool(match_entry is not None and match_entry.stale_art),
             cached=host_cache is not None,
             cached_when=host_cache.when if host_cache is not None else None,
         )
@@ -553,10 +559,269 @@ def cmd_search(
     return EXIT_OK
 
 
+# ---------------------------------------------------------------------------
+# match (decky spec 3.4.4, 3.4.6, 3.4.8)
+# ---------------------------------------------------------------------------
+
+
+#: How many SteamGridDB autocomplete results ``match --steam`` checks for
+#: one whose Steam release is the pinned appid -- the same cap ``search``
+#: applies per source.
+MATCH_SGDB_CANDIDATES = 10
+
+
+def _sgdb_id_for_steam_appid(
+    services: ArtServices, name: str, steam_appid: int
+) -> tuple[int | None, str | None]:
+    """``match --steam``'s SteamGridDB id and name (decky spec 3.4.4).
+
+    There is no Steam-appid -> SGDB-id lookup, so the id is re-found by
+    ``sgdb.search(name)`` filtered to the results whose Steam release
+    (``games/id/{id}?platformdata=steam``) is ``steam_appid``. ``(None,
+    None)`` without a key, with no such result, or when the search itself
+    fails (a transient failure only costs the community-art fallback);
+    :class:`HardStop` propagates.
+    """
+    if not services.sgdb.enabled:
+        return None, None
+    try:
+        results = services.sgdb.search(name)
+    except HardStop:
+        raise
+    except HttpError:
+        return None, None
+    for item in results[:MATCH_SGDB_CANDIDATES]:
+        sgdb_id = _as_int(item.get("id"))
+        if sgdb_id is None:
+            continue
+        try:
+            game = services.sgdb.game(sgdb_id)
+        except HardStop:
+            raise
+        except HttpError:
+            continue
+        if steam_appid_from_game(game) == steam_appid:
+            return sgdb_id, (str(item.get("name") or "") or None)
+    return None, None
+
+
+def _steam_appid_for_sgdb_id(
+    services: ArtServices, sgdb_id: int
+) -> tuple[int | None, str | None]:
+    """``match --sgdb``'s Steam appid and the game's SteamGridDB name, from
+    ``games/id/{id}?platformdata=steam`` when a key is configured (decky
+    spec 3.4.4); ``(None, None)`` without one or when the call fails."""
+    if not services.sgdb.enabled:
+        return None, None
+    try:
+        game = services.sgdb.game(sgdb_id)
+    except HardStop:
+        raise
+    except HttpError:
+        return None, None
+    return steam_appid_from_game(game), (str(game.get("name") or "") or None)
+
+
+def override_line(
+    name: str, *, steam_appid: int | None = None, sgdb_id: int | None = None
+) -> str:
+    """The ``[overrides]`` line equivalent to a pin (decky spec 3.4.4).
+
+    ``"Hades II" = { steam = 1145350 }`` for ``--steam``, ``{ sgdb = N }``
+    for ``--sgdb``, and ``{}`` for ``--none`` -- an empty override table is
+    the config form of "no match".
+    """
+    key = json.dumps(name, ensure_ascii=False)  # a TOML basic string
+    if steam_appid is not None:
+        return f"{key} = {{ steam = {steam_appid} }}"
+    if sgdb_id is not None:
+        return f"{key} = {{ sgdb = {sgdb_id} }}"
+    return f"{key} = {{}}"
+
+
+def _id_text(value: int | None) -> str:
+    return str(value) if value is not None else "none"
+
+
+def cmd_match(
+    args: argparse.Namespace,
+    config: Config,
+    *,
+    deps: Deps | None = None,
+    out: TextIO | None = None,
+    err: TextIO | None = None,
+) -> int:
+    """``moonlight-steam-sync match "Name" (--steam N | --sgdb N | --none | --unpin)``.
+
+    Cache surgery on ``matches.json`` (decky spec 3.4.4): writes a
+    ``how == "pinned"`` entry for the title -- the one cache entry ``art
+    --force`` and ``--retry-missing`` never overwrite -- or, with
+    ``--unpin``, deletes the title's entry so the next run re-resolves it.
+    A ``[overrides]`` entry in ``config.toml`` still wins over a pin, and
+    the equivalent override line is printed so a CLI user can make the pin
+    permanent by hand (the tool never writes ``config.toml``).
+
+    When the title has an owned shortcut, its art belongs to the old match:
+
+    * by default the title's grid files are deleted and its ``icon`` field
+      cleared, through :func:`moonlight_steam_sync.sync.commit_shortcuts`
+      like ``remove`` -- so under a live Steam without ``restart_steam``
+      it exits 2 and touches nothing, not even the pin;
+    * with ``--defer-art`` only the cache is written and the entry records
+      ``stale_art: true``, for the next ``sync`` to act on.
+
+    A name that is neither owned nor in the resolved host's cached app list
+    (the per-host list cache ``sync``/``list`` write; ``match`` never runs
+    ``moonlight``) is exit 1 unless ``--force-name`` (a pin for a title the
+    host will publish later).
+    """
+    # ``sync`` imports this module, so the orchestration helpers (the one
+    # shortcuts.vdf writer among them) are imported at call time.
+    from moonlight_steam_sync import sync
+
+    deps = deps or sync.Deps()
+    out = out or sys.stdout
+    err = err or sys.stderr
+    json_mode = bool(getattr(args, "json", False))
+    reporter = Reporter(out, err, json=json_mode, command="match", version=_pkg_version())
+    reporter.start()
+
+    name: str = args.name
+    steam_flag = getattr(args, "steam", None)
+    sgdb_flag = getattr(args, "sgdb", None)
+    unpin = bool(getattr(args, "unpin", False))
+    defer_art = bool(getattr(args, "defer_art", False))
+    force_name = bool(getattr(args, "force_name", False))
+
+    for flag, value in (("--steam", steam_flag), ("--sgdb", sgdb_flag)):
+        if value is not None and value <= 0:
+            reporter.error(f"match: {flag} must be a positive id", EXIT_USAGE_OR_CONFIG)
+            return EXIT_USAGE_OR_CONFIG
+
+    library = sync._open_library_or_report("match", reporter)
+    if library is None:
+        return EXIT_USAGE_OR_CONFIG
+    owned_by_name: dict[str, Any] = {}
+    for entry in library.file.owned(config.exe):
+        owned_by_name.setdefault(
+            entry.moonlight_name(config.launch_options, config.name_suffix), entry
+        )
+    shortcut = owned_by_name.get(name)
+
+    if shortcut is None and not force_name:
+        host_cache = (
+            hosts.read_host_cache(deps.resolved_hosts_dir(), config.host) if config.host else None
+        )
+        if host_cache is None or name not in host_cache.apps:
+            where = (
+                f"{config.host}'s cached app list"
+                if host_cache is not None
+                else "any cached app list"
+            )
+            reporter.error(
+                f"match: {name!r} has no owned shortcut and is not in {where}; "
+                "pass --force-name to pin it anyway",
+                EXIT_USAGE_OR_CONFIG,
+            )
+            return EXIT_USAGE_OR_CONFIG
+
+    services = deps.services or build_services(config, cache_path=deps.cache_path)
+    cache = services.cache
+
+    pin: Match | None = None
+    line: str | None = None
+    if not unpin:
+        try:
+            if steam_flag is not None:
+                sgdb_id, sgdb_name = _sgdb_id_for_steam_appid(services, name, steam_flag)
+                pin = Match(
+                    name=name,
+                    steam_appid=steam_flag,
+                    sgdb_id=sgdb_id,
+                    matched_name=sgdb_name or name,
+                )
+                line = override_line(name, steam_appid=steam_flag)
+            elif sgdb_flag is not None:
+                steam_appid, sgdb_name = _steam_appid_for_sgdb_id(services, sgdb_flag)
+                pin = Match(
+                    name=name,
+                    steam_appid=steam_appid,
+                    sgdb_id=sgdb_flag,
+                    matched_name=sgdb_name or name,
+                )
+                line = override_line(name, sgdb_id=sgdb_flag)
+            else:  # --none
+                pin = Match(name=name)
+                line = override_line(name)
+        except HardStop as exc:
+            reporter.error(f"match: {exc}", EXIT_NETWORK_STOPPED)
+            return EXIT_NETWORK_STOPPED
+
+    immediate = shortcut is not None and not defer_art
+    commit = None
+    if immediate:
+        # The icon field lives in shortcuts.vdf, so clearing it goes through
+        # the one writer, exactly like `remove`; a refusal (exit 2) happens
+        # before the pin or any grid file is touched.
+        if shortcut.icon:
+            shortcut.icon = ""
+        write_out = reporter.err if reporter.json else reporter.out
+        try:
+            commit = sync.commit_shortcuts(
+                library.file, config=config, runner=deps.runner, out=write_out
+            )
+        except steam.SteamRunningError as exc:
+            reporter.error(f"match: {exc}", EXIT_STEAM_RUNNING)
+            return EXIT_STEAM_RUNNING
+
+    if pin is not None:
+        cache.pin(pin)
+    else:
+        cache.unpin(name)
+
+    deleted = 0
+    if immediate:
+        for path in sync.grid_files_for(library.grid_dir, shortcut.appid):
+            with contextlib.suppress(OSError):
+                path.unlink()
+                deleted += 1
+
+    if pin is None:
+        reporter.line(f'unpinned "{name}"; the next run re-resolves it')
+    elif pin.found:
+        reporter.line(
+            f'pinned "{name}": steam {_id_text(pin.steam_appid)}, sgdb {_id_text(pin.sgdb_id)}'
+        )
+    else:
+        reporter.line(f'pinned "{name}": no match')
+    if line is not None:
+        reporter.line(line)
+    reporter.event(
+        "pinned",
+        name=name,
+        steam_appid=pin.steam_appid if pin is not None else None,
+        sgdb_id=pin.sgdb_id if pin is not None else None,
+        override_line=line,
+    )
+
+    if immediate:
+        assert commit is not None
+        reporter.line(commit.describe(library.user.shortcuts_path))
+        reporter.line(f"deleted {deleted} grid file(s)")
+    elif shortcut is not None and pin is not None:
+        cache.mark_stale_art(name)
+        message = f'art for "{name}" will be re-fetched on the next sync'
+        reporter.line(message)
+        reporter.event("note", message=message)
+    return EXIT_OK
+
+
 __all__ = [
     "ArtServices",
     "build_services",
     "cmd_art",
+    "cmd_match",
     "cmd_search",
     "cmd_status",
+    "override_line",
 ]
