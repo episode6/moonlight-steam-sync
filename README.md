@@ -157,8 +157,8 @@ moonlight-steam-sync [--json] search    "term" [--owned-apps PATH]
 moonlight-steam-sync [--json] host      show [--host H] | set NAME | clear
 moonlight-steam-sync [--json] ignore    --all | "Name"...
 moonlight-steam-sync [--json] remove    --all | "Name"...
-moonlight-steam-sync         launch    "Name" [-- extra moonlight flags]
-moonlight-steam-sync         doctor    [--host H] [--owned-apps PATH]
+moonlight-steam-sync [--json] launch    [--host H] "Name" [-- extra moonlight flags]
+moonlight-steam-sync [--json] doctor    [--host H] [--owned-apps PATH]
 ```
 
 `--json`, before the subcommand, switches every command to the

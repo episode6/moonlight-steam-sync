@@ -32,6 +32,16 @@ below are passed.
 - `doctor` gains `session:`, `active host:` and `cached hosts:` lines, plus
   an `owned-apps file:` line when `--owned-apps` is passed.
 
+### Fixed
+
+- `--json launch`: `start` and `exec` are now flushed before `moonlight
+  stream` replaces the process, so a reader on the other end of a pipe (as
+  the Decky plugin uses) actually sees them; a missing `moonlight` binary
+  now yields `start`, `error` rather than `start`, `exec`, `error`.
+- `sync --json`'s `summary` event: `stopped_early` now always agrees with
+  `stop_reason` (both null, or both set), including on the `--dry-run`
+  hard-stop and `Ctrl-C` paths.
+
 ## [0.2.0] - 2026-09-18
 
 Stops the host app listing from crashing a large Apollo host. Minor bump

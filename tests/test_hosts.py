@@ -34,6 +34,22 @@ def _state_home(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# slug() -- the filename rule the plugin relies on to find the cache file
+# ---------------------------------------------------------------------------
+
+
+def test_slug_lowercases_and_replaces_anything_outside_a_z0_9_dot_dash_underscore():
+    """Every other slug reference in this file exercises ``MY-GAMING-PC``
+    (dashes and uppercase only, both already allowed characters once
+    lowercased); this pins the actual replacement rule (spec 3.12) on a name
+    with a space, a slash and a non-ASCII character, which the plugin's
+    hostnames are not guaranteed to avoid."""
+    assert hosts.slug("MY-GAMING-PC") == "my-gaming-pc"
+    assert hosts.slug("Office PC/2") == "office_pc_2"
+    assert hosts.slug("Café-PC") == "caf_-pc"
+
+
+# ---------------------------------------------------------------------------
 # active-host precedence: flag > state file > config.toml
 # ---------------------------------------------------------------------------
 

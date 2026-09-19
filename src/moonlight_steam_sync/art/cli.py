@@ -190,7 +190,7 @@ def cmd_art(
 
     def on_title(result: Any) -> None:
         title_index[0] += 1
-        reporter.event("title", **_art_title_event_fields(title_index[0], len(targets), result))
+        reporter.title(**_art_title_event_fields(title_index[0], len(targets), result))
 
     try:
         summary = run_art(

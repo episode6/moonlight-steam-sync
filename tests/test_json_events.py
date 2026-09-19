@@ -14,7 +14,7 @@ import os
 
 from moonlight_steam_sync import config as config_module
 from moonlight_steam_sync import moonlight, sync
-from moonlight_steam_sync.__main__ import build_parser
+from moonlight_steam_sync.__main__ import build_parser, cmd_launch
 from moonlight_steam_sync.__main__ import main as main_module_main
 from moonlight_steam_sync.art.apply import ArtTarget
 from moonlight_steam_sync.art.cli import build_services, cmd_search, cmd_status
@@ -179,6 +179,41 @@ def test_error_event_on_exit_130_interrupted(fresh_world, tmp_path, monkeypatch)
     assert events[-1]["exit"] == 130
     summary = next(e for e in events if e["event"] == "summary")
     assert summary["stop_reason"] == "interrupted"
+
+
+def test_dry_run_hard_stop_summary_agrees_on_stopped_early(fresh_world, tmp_path, monkeypatch):
+    """Repair pass (round 2): ``--dry-run``'s hard-stop summary used to say
+    ``stopped_early: false`` in the same event that carries a non-null
+    ``stop_reason``, because ``_summary_event_fields`` derived
+    ``stopped_early`` from ``summary`` alone while ``_dry_run`` calls it with
+    ``summary=None`` and an explicit ``stop_reason``. The plugin reads
+    ``stopped_early`` to decide whether to offer "resume"."""
+    host_publishes(tmp_path, monkeypatch, ["Only Title"])
+    transport = BulkTransport(["Only Title"], rate_limit_after=0)
+    result = fresh_world.run(["--json", "sync", "--dry-run"], transport=transport)
+    assert result.code == 4
+    events = _json_lines(result.out)
+    summary = next(e for e in events if e["event"] == "summary")
+    assert summary["stopped_early"] is True
+    assert summary["stop_reason"] is not None
+    assert events[-1]["event"] == "error"
+    assert events[-1]["exit"] == 4
+
+
+def test_dry_run_interrupted_summary_agrees_on_stopped_early(fresh_world, tmp_path, monkeypatch):
+    """Same bug, the ``--dry-run`` + ``KeyboardInterrupt`` path (cmd_sync's
+    own handler, which also calls ``_summary_event_fields`` with
+    ``summary=None``)."""
+    host_publishes(tmp_path, monkeypatch, ["Only Title"])
+    transport = BulkTransport(["Only Title"], crash_after=0, crash_with=KeyboardInterrupt())
+    result = fresh_world.run(["--json", "sync", "--dry-run"], transport=transport)
+    assert result.code == 130
+    events = _json_lines(result.out)
+    summary = next(e for e in events if e["event"] == "summary")
+    assert summary["stopped_early"] is True
+    assert summary["stop_reason"] == "interrupted"
+    assert events[-1]["event"] == "error"
+    assert events[-1]["exit"] == 130
 
 
 # ---------------------------------------------------------------------------
@@ -480,6 +515,27 @@ def test_doctor_json_moves_the_report_to_stderr(tmp_path, monkeypatch, capsys):
     assert "python:" not in out
 
 
+def test_doctor_owned_apps_without_a_steamid3_field_prints_missing_not_none(
+    tmp_path, monkeypatch, capsys
+):
+    """Repair pass (round 2): ``owned_apps_steamid3`` returns ``None`` for a
+    file with no ``steamid3`` field (the loader does not require it), and
+    the doctor line used to print the Python ``None`` literally
+    (``steamid3 None``) rather than a human ``missing``."""
+    key_file = tmp_path / "sgdb-api-key"
+    monkeypatch.setattr(config_module, "DEFAULT_CONFIG_PATH", tmp_path / "config.toml")
+    monkeypatch.setattr(config_module, "DEFAULT_KEY_FILE", key_file)
+    monkeypatch.delenv("SGDB_API_KEY", raising=False)
+    owned_path = tmp_path / "owned-apps.json"
+    owned_path.write_text(json.dumps({"version": 1, "apps": {"1245620": "ELDEN RING"}}))
+
+    exit_code = main_module_main(["doctor", "--owned-apps", str(owned_path)])
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "steamid3 missing" in out
+    assert "steamid3 None" not in out
+
+
 # ---------------------------------------------------------------------------
 # launch --json: start then exec; error on every failure path
 # ---------------------------------------------------------------------------
@@ -515,6 +571,65 @@ def test_launch_json_no_host_configured_is_an_error_event(tmp_path, monkeypatch,
     assert events[-1]["event"] == "error"
     assert events[-1]["exit"] == 1
     assert "no host configured" in events[-1]["message"]
+
+
+def test_launch_json_reaches_a_real_pipe_before_execvp_replaces_the_process(
+    tmp_path, monkeypatch
+):
+    """Repair pass (round 2): stdout is block-buffered when it is a pipe (as
+    it is for the Decky plugin driving this as a subprocess), and
+    ``os.execvp`` replaces the process image without ever flushing Python's
+    buffers. ``capsys``/``StringIO`` mask this because they flush for you on
+    read, so this test uses a real ``os.pipe()`` and never closes or reads
+    from the write end -- only an explicit ``flush()`` before the (stubbed)
+    ``execvp`` call can make the bytes visible on the read end here."""
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('host = "MY-GAMING-PC"\n')
+    monkeypatch.setattr(config_module, "DEFAULT_CONFIG_PATH", config_path)
+    monkeypatch.setattr(config_module, "DEFAULT_KEY_FILE", tmp_path / "sgdb-api-key")
+    monkeypatch.setattr(moonlight, "find_binary", lambda: ["/usr/bin/moonlight"])
+    monkeypatch.setattr(os, "execvp", lambda file, args: None)
+
+    read_fd, write_fd = os.pipe()
+    # A generous, fully block-buffered TextIOWrapper -- the same shape a
+    # real OS pipe gives a non-interactive stdout.
+    writer = os.fdopen(write_fd, "w", buffering=1 << 16)
+    reader = os.fdopen(read_fd, "r")
+    try:
+        parser = build_parser()
+        args = parser.parse_args(["--json", "launch", "Elden Ring"])
+        exit_code = cmd_launch(args, out=writer, err=io.StringIO())
+        assert exit_code == 0
+
+        os.set_blocking(read_fd, False)
+        available = reader.read()
+        events = _json_lines(available)
+        assert events[0]["event"] == "start"
+        assert events[1]["event"] == "exec"
+    finally:
+        writer.close()
+        reader.close()
+
+
+def test_launch_json_moonlight_not_found_is_start_then_error_never_exec(
+    tmp_path, monkeypatch, capsys
+):
+    """Repair pass (round 2): a missing binary must yield ``start, error``,
+    never ``start, exec, error`` -- ``exec`` is the announcement that
+    ``execvp`` is about to run, which never happens when there is no binary
+    to run it with."""
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('host = "MY-GAMING-PC"\n')
+    monkeypatch.setattr(config_module, "DEFAULT_CONFIG_PATH", config_path)
+    monkeypatch.setattr(config_module, "DEFAULT_KEY_FILE", tmp_path / "sgdb-api-key")
+    monkeypatch.setattr(moonlight, "find_binary", lambda: None)
+
+    exit_code = main_module_main(["--json", "launch", "Elden Ring"])
+    assert exit_code == 3
+    out = capsys.readouterr().out
+
+    events = _json_lines(out)
+    assert [e["event"] for e in events] == ["start", "error"]
 
 
 def test_launch_json_moonlight_unreachable_is_an_error_event(tmp_path, monkeypatch, capsys):

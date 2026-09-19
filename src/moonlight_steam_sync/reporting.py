@@ -69,6 +69,22 @@ class Reporter:
             return
         print(json.dumps({"event": event_name, **fields}, sort_keys=True), file=self.out)
 
+    def plan(self, **fields: Any) -> None:
+        """The ``plan`` event (spec 3.4.6). A thin alias for
+        ``event("plan", **fields)``, kept as its own method because the
+        spec names ``sync.Reporter``'s methods as ``plan()``/``title()``/
+        ``line()``/``event()``; the field-building itself stays in the
+        caller (``sync._plan_event_fields``), since :class:`Reporter` has
+        no access to ``Plan``/``RunSummary`` without importing back into
+        ``sync`` (see the module docstring)."""
+        self.event("plan", **fields)
+
+    def title(self, **fields: Any) -> None:
+        """The ``title`` event (spec 3.4.6), emitted per title by ``sync``
+        and ``art``. See :meth:`plan` for why the field builders stay in
+        the caller."""
+        self.event("title", **fields)
+
 
 def match_json(match: Any) -> dict[str, Any] | None:
     """``{steam_appid, sgdb_id, matched_name, how}``, or ``None`` (spec 3.4.6).

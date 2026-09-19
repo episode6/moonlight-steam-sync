@@ -294,8 +294,9 @@ def cmd_doctor(
             lines.append(f"owned-apps file: {owned_path} (invalid: {exc})")
         else:
             steamid3 = owned_apps_steamid3(owned_path)
+            steamid3_text = str(steamid3) if steamid3 is not None else "missing"
             lines.append(
-                f"owned-apps file: {owned_path} ({len(apps)} apps, steamid3 {steamid3})"
+                f"owned-apps file: {owned_path} ({len(apps)} apps, steamid3 {steamid3_text})"
             )
 
     for line in lines:
@@ -327,7 +328,23 @@ def cmd_launch(
         )
         return EXIT_USAGE_OR_CONFIG
 
+    binary = moonlight.find_binary()
+    if binary is None:
+        reporter.error(
+            "launch: moonlight CLI not found (native binary, flatpak, or "
+            "MOONLIGHT_BIN)",
+            EXIT_MOONLIGHT_UNREACHABLE,
+        )
+        return EXIT_MOONLIGHT_UNREACHABLE
+
     reporter.event("exec", host=cfg.host, name=args.name)
+    # stdout/stderr are block-buffered when not attached to a terminal (a
+    # pipe, as the Decky plugin uses), and os.execvp below replaces this
+    # process image without ever flushing Python's buffers -- so without an
+    # explicit flush here, everything emitted so far (start, exec) is lost
+    # rather than reaching the reader.
+    out.flush()
+    err.flush()
     try:
         moonlight.stream(cfg.host, args.name, args.extra)
     except moonlight.MoonlightNotFoundError as exc:

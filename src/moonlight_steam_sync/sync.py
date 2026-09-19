@@ -178,7 +178,10 @@ def _list_host_or_report(
     except OSError as exc:
         # Best-effort (spec 3.11/3.12): an unwritable cache dir must not turn
         # an otherwise-successful list into a failed command.
-        reporter.note(f"could not write host list cache: {exc}")
+        # v0.2.0 never printed anything for this (spec 3.11): the cache
+        # write is new in this PR, so its failure note is --json-only,
+        # like the other notes new in this PR.
+        reporter.note(f"could not write host list cache: {exc}", only_json=True)
     return apps
 
 
@@ -569,6 +572,9 @@ def _summary_event_fields(
     stop_reason: str | None = None,
 ) -> dict[str, Any]:
     added = len(plan.to_add) if commit is not None and commit.written else 0
+    resolved_stop_reason = stop_reason if stop_reason is not None else (
+        summary.stop_reason if summary and summary.stopped_early else None
+    )
     return {
         "added": added,
         "replaced": 0,
@@ -578,10 +584,8 @@ def _summary_event_fields(
         "unmatched": summary.unmatched if summary is not None else [],
         "duplicates": {},
         "pending": len(plan.pending),
-        "stopped_early": bool(summary and summary.stopped_early),
-        "stop_reason": stop_reason if stop_reason is not None else (
-            summary.stop_reason if summary and summary.stopped_early else None
-        ),
+        "stopped_early": resolved_stop_reason is not None,
+        "stop_reason": resolved_stop_reason,
         "exit": exit_code,
     }
 
@@ -668,7 +672,7 @@ def cmd_sync(
 
     plan = build_plan(config, apps, library.file, limit=options.limit)
     reporter.line(plan.header())
-    reporter.event("plan", **_plan_event_fields(plan))
+    reporter.plan(**_plan_event_fields(plan))
 
     services: ArtServices | None = None
     if not options.no_art:
@@ -725,7 +729,7 @@ def _sync(
 
     def on_title(result: Any) -> None:
         index = next(title_counter)
-        reporter.event("title", **_title_event_fields(index, len(targets), result))
+        reporter.title(**_title_event_fields(index, len(targets), result))
 
     summary: RunSummary | None = None
     if services is not None:
