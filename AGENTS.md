@@ -291,6 +291,18 @@ every title (`tests/test_art_apply.py`).
   `remove`; `--defer-art` only marks the entry `stale_art`. Acting on that
   flag (a `rematched` replacement in `build_plan`, decky spec 3.4.2) is
   the owned-apps PR's job; until it lands, `sync` keeps the art on disk.
+- **`stale_art` belongs to the grid files, not to the match.** It says
+  "the art on disk came from an earlier match", so `MatchCache.put()`
+  carries it forward onto whatever resolution replaces a flagged entry;
+  only `pin()` (a fresh choice by the user) and `clear_stale_art()` (the
+  art was re-fetched) drop it. That is what makes `match --unpin
+  --defer-art` work: with no entry left to flag it leaves a `how:
+  "unpinned"` placeholder (ids null, flag set) that `Resolver.resolve()`
+  treats as a cache miss and `match_json()` reports as `null`, and the
+  next run's search inherits the flag. Never treat `unpinned` as a
+  resolution anywhere (`Match.unpinned`), and never write a `stale_art`
+  entry over a `put()` without thinking about which of the two rules
+  applies.
 - **Every network failure is an `HttpError`, including one halfway through a
   response body.** A connection that dies while a download is streaming used
   to escape as a bare `OSError` past every handler; `Fetcher` now translates
