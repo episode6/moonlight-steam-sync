@@ -90,9 +90,13 @@ def match_json(match: Any) -> dict[str, Any] | None:
     """``{steam_appid, sgdb_id, matched_name, how}``, or ``None`` (spec 3.4.6).
 
     ``match`` is a :class:`~moonlight_steam_sync.art.resolve.Match`, or
-    ``None`` when the title has no cache entry.
+    ``None`` when the title has no cache entry. The ``unpinned``
+    placeholder ``match --unpin --defer-art`` leaves (decky spec 3.4.4) is
+    reported as ``None`` too: it carries ``stale_art`` and nothing else, and
+    on the wire "not in ``matches.json``" is exactly what ``--unpin``
+    promises until the next run re-resolves the title.
     """
-    if match is None:
+    if match is None or getattr(match, "unpinned", False):
         return None
     return {
         "steam_appid": match.steam_appid,

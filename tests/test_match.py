@@ -188,6 +188,51 @@ def test_stale_art_is_persisted_only_while_set(tmp_path):
     assert MatchCache(path).get("Hades II").stale_art is False
 
 
+def test_put_carries_stale_art_forward_but_pin_starts_clean(tmp_path):
+    """``stale_art`` describes the grid files, not the match, so a
+    re-resolution written over a flagged entry keeps the flag; only a pin
+    (the user's fresh choice) or ``clear_stale_art`` drops it."""
+    path = tmp_path / "matches.json"
+    cache = MatchCache(path)
+    cache.put(Match(name="Hades II", steam_appid=1, how="sgdb:fuzzy"))
+    cache.mark_stale_art("Hades II")
+
+    cache.put(Match(name="Hades II", steam_appid=HADES_STEAM, how="sgdb:exact-verified"))
+    entry = json.loads(path.read_text())["titles"]["Hades II"]
+    assert entry["how"] == "sgdb:exact-verified" and entry["stale_art"] is True
+    assert MatchCache(path).get("Hades II").stale_art is True
+
+    cache.pin(Match(name="Hades II", steam_appid=HADES_STEAM))
+    assert "stale_art" not in json.loads(path.read_text())["titles"]["Hades II"]
+
+    cache.mark_stale_art("Hades II")
+    cache.put(Match(name="Hades II", steam_appid=HADES_STEAM, how="override"), keep_stale_art=False)
+    assert "stale_art" not in json.loads(path.read_text())["titles"]["Hades II"]
+
+
+def test_unpin_with_stale_art_leaves_a_placeholder_that_only_carries_the_flag(tmp_path):
+    path = tmp_path / "matches.json"
+    cache = MatchCache(path)
+    cache.pin(Match(name="Hades II", steam_appid=HADES_STEAM, sgdb_id=HADES_SGDB,
+                    matched_name="Hades II"))
+
+    assert cache.unpin("Hades II", stale_art=True) is True
+
+    entry = json.loads(path.read_text())["titles"]["Hades II"]
+    assert entry["how"] == "unpinned" and entry["stale_art"] is True
+    assert (entry["steam_appid"], entry["sgdb_id"], entry["matched_name"]) == (None, None, None)
+    reloaded = MatchCache(path).get("Hades II")
+    assert reloaded.unpinned and reloaded.stale_art and not reloaded.found and not reloaded.pinned
+    # A second unpin (with or without the flag) is a no-op on the placeholder
+    # apart from the return value, which now says "there was an entry".
+    assert cache.unpin("Hades II", stale_art=True) is True
+    assert json.loads(path.read_text())["titles"]["Hades II"]["how"] == "unpinned"
+    # The placeholder is invented even for a title with no entry, because
+    # the flag is about the files on disk, not about a prior entry.
+    assert cache.unpin("Nobody", stale_art=True) is False
+    assert json.loads(path.read_text())["titles"]["Nobody"]["stale_art"] is True
+
+
 # ---------------------------------------------------------------------------
 # the resolver: a pin comes before force and retry_missing; config beats it
 # ---------------------------------------------------------------------------
@@ -224,6 +269,49 @@ def test_a_none_pin_is_never_re_searched_even_with_retry_missing(tmp_path):
     match = resolver.resolve("Elden Ring")
     assert transport.calls == []
     assert match.how == "pinned" and not match.found
+
+
+def test_an_unpinned_placeholder_is_a_cache_miss_whose_flag_survives_the_search(tmp_path):
+    """The placeholder ``match --unpin --defer-art`` leaves is re-searched
+    like a missing entry (no 7-day negative window, whatever its ``when``),
+    and the resolution written over it keeps ``stale_art`` for ``sync``."""
+    transport = FakeTransport()
+    resolver = resolver_for(tmp_path, transport)
+    resolver.cache.pin(Match(name="Elden Ring", steam_appid=HOLLOW_STEAM))
+    resolver.cache.unpin("Elden Ring", stale_art=True)
+
+    match = resolver.resolve("Elden Ring")
+
+    assert f"{AUTOCOMPLETE}Elden%20Ring" in transport.calls
+    assert match.how == "sgdb:exact-verified" and match.steam_appid == ELDEN_STEAM
+    assert match.stale_art is True
+    on_disk = json.loads((tmp_path / "matches.json").read_text())["titles"]["Elden Ring"]
+    assert on_disk["how"] == "sgdb:exact-verified" and on_disk["stale_art"] is True
+    # ...and a second resolve is the cache hit it always was, flag intact.
+    calls = len(transport.calls)
+    again = resolver.resolve("Elden Ring")
+    assert len(transport.calls) == calls and again.how == "sgdb:exact-verified"
+    assert again.stale_art is True
+
+
+def test_a_placeholder_survives_a_transient_lookup_failure(tmp_path, monkeypatch):
+    """A failed search writes nothing (spec 6.10), so the placeholder -- and
+    its flag -- are still there for the next run."""
+    transport = FakeTransport()
+    resolver = resolver_for(tmp_path, transport)
+    resolver.cache.unpin("Elden Ring", stale_art=True)
+    monkeypatch.setattr(resolver.sgdb, "search", lambda name: (_ for _ in ()).throw(
+        __import__("moonlight_steam_sync.art.http", fromlist=["HttpError"]).HttpError("boom")
+    ))
+    monkeypatch.setattr(resolver.store, "search", lambda name: (_ for _ in ()).throw(
+        __import__("moonlight_steam_sync.art.http", fromlist=["HttpError"]).HttpError("boom")
+    ))
+
+    match = resolver.resolve("Elden Ring")
+
+    assert match.transient and not match.found
+    entry = json.loads((tmp_path / "matches.json").read_text())["titles"]["Elden Ring"]
+    assert entry["how"] == "unpinned" and entry["stale_art"] is True
 
 
 def test_an_override_in_config_beats_a_pin(tmp_path):
@@ -443,6 +531,81 @@ def test_unpin_of_a_title_with_no_entry_is_fine(world):
     assert "unpinned" in result.out
 
 
+def test_unpin_defer_art_keeps_the_art_stale_across_the_re_resolution(
+    world, tmp_path, monkeypatch
+):
+    """``match --unpin --defer-art`` is what the plugin runs for unpin
+    (decky spec 3.7). The entry is gone as a match, but the grid files on
+    disk still belong to the pin, so a placeholder carries ``stale_art``
+    and the next ``sync``'s re-resolution inherits it (spec 3.4.4)."""
+    synced(world, tmp_path, monkeypatch, ["Elden Ring"])
+    elden = shortcut(world, "Elden Ring")
+    assert run_match(
+        world, ["match", "Elden Ring", "--steam", str(HOLLOW_STEAM), "--defer-art"]
+    ).code == 0
+    vdf, _cache, grid, backups = snapshot(world)
+    runner = FakeRunner(running=True)
+
+    result = run_match(world, ["match", "Elden Ring", "--unpin", "--defer-art"], runner=runner)
+
+    assert result.code == 0, result.err
+    assert result.out.splitlines() == [
+        'unpinned "Elden Ring"; the next run re-resolves it',
+        'art for "Elden Ring" will be re-fetched on the next sync',
+    ]
+    assert runner.calls == [] and runner.spawned == []
+    assert world.shortcuts_path.read_bytes() == vdf
+    assert world.grid_files() == grid and world.backups() == backups
+    entry = cache_entry(world, "Elden Ring")
+    assert entry["how"] == "unpinned" and entry["stale_art"] is True
+    assert entry["steam_appid"] is None and entry["sgdb_id"] is None
+
+    # The placeholder is "no match" on the wire, with the flag set.
+    out, err = io.StringIO(), io.StringIO()
+    code = cmd_status(
+        build_parser().parse_args(["--json", "status"]),
+        world.config, cache_path=world.cache_path, out=out, err=err,
+    )
+    assert code == 0, err.getvalue()
+    status_entry = next(e for e in json_lines(out.getvalue()) if e.get("name") == "Elden Ring")
+    assert status_entry["match"] is None and status_entry["stale_art"] is True
+    listed = world.run(["--json", "list"])
+    app = next(e for e in json_lines(listed.out) if e["event"] == "app")
+    assert app["match"] is None and app["fuzzy"] is False
+
+    # The next sync re-resolves (a real search, not the pin) and the fresh
+    # entry still carries the flag; PR-2 leaves acting on it to the
+    # owned-apps PR, so the art on disk is kept and nothing is written.
+    again = world.run(["sync"])
+    assert again.code == 0, again.err
+    assert f"{AUTOCOMPLETE}Elden%20Ring" in again.calls
+    assert not any(f"/apps/{HOLLOW_STEAM}/" in url for url in again.calls)
+    entry = cache_entry(world, "Elden Ring")
+    assert entry["how"] == "sgdb:exact-verified" and entry["steam_appid"] == ELDEN_STEAM
+    assert entry["stale_art"] is True
+    assert world.shortcuts_path.read_bytes() == vdf
+    assert len(grid_files_of(world, elden.appid)) == 5
+    # A second sync is the usual cache hit: zero calls, flag still there.
+    third = world.run(["sync"])
+    assert third.code == 0 and third.calls == []
+    assert cache_entry(world, "Elden Ring")["stale_art"] is True
+
+
+def test_unpin_defer_art_without_a_shortcut_deletes_the_entry_outright(
+    fresh_world, tmp_path, monkeypatch
+):
+    host_publishes(tmp_path, monkeypatch, ["Elden Ring"])
+    assert run_match(
+        fresh_world, ["match", "Elden Ring", "--none", "--force-name"]
+    ).code == 0
+    result = run_match(
+        fresh_world, ["match", "Elden Ring", "--unpin", "--defer-art", "--force-name"]
+    )
+    assert result.code == 0, result.err
+    assert result.out.splitlines() == ['unpinned "Elden Ring"; the next run re-resolves it']
+    assert cache_entry(fresh_world, "Elden Ring") is None
+
+
 # ---------------------------------------------------------------------------
 # match: what happens to the art of an owned shortcut
 # ---------------------------------------------------------------------------
@@ -660,7 +823,9 @@ def test_match_json_none_and_unpin(world):
     }
     unpinned = run_match(world, ["--json", "match", "Elden Ring", "--unpin", "--defer-art"])
     events = json_lines(unpinned.out)
-    assert [e["event"] for e in events] == ["start", "pinned"]
+    # Elden Ring has a shortcut in `world`, so the deferred unpin also notes
+    # that its art is stale (the same note a deferred pin emits).
+    assert [e["event"] for e in events] == ["start", "pinned", "note"]
     assert events[1] == {
         "event": "pinned",
         "name": "Elden Ring",
@@ -668,6 +833,7 @@ def test_match_json_none_and_unpin(world):
         "sgdb_id": None,
         "override_line": None,
     }
+    assert events[2]["message"] == 'art for "Elden Ring" will be re-fetched on the next sync'
 
 
 def test_match_json_errors_are_the_last_line(world, tmp_path, monkeypatch):
