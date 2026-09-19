@@ -54,6 +54,7 @@ __all__ = [
     "default_exe",
     "default_launch_options",
     "load_config",
+    "load_ignore_file",
     "load_owned_apps",
     "owned_apps_steamid3",
     "toml_host",
@@ -99,6 +100,10 @@ class Config:
     #: ``--owned-apps PATH``, unparsed -- flag only, never a TOML key (spec
     #: 3.4.1); ``load_owned_apps()`` does the actual loading/validation.
     owned_apps_path: Path | None = None
+    #: ``--ignore-file PATH``, unparsed -- flag only (decky spec 3.4.3), the
+    #: Decky plugin's own ignore store; ``load_ignore_file()`` loads it and
+    #: the commands that take it union it with :attr:`ignore`.
+    ignore_file_path: Path | None = None
 
     def __post_init__(self) -> None:
         if not self.launch_options:
@@ -214,11 +219,16 @@ def load_config(
 
     owned_apps_flag = flag("owned_apps")
     owned_apps_path = Path(owned_apps_flag) if owned_apps_flag not in (_UNSET, "", None) else None
+    ignore_file_flag = flag("ignore_file")
+    ignore_file_path = (
+        Path(ignore_file_flag) if ignore_file_flag not in (_UNSET, "", None) else None
+    )
 
     cfg = Config(
         host=host,
         host_source=host_source,
         owned_apps_path=owned_apps_path,
+        ignore_file_path=ignore_file_path,
         name_suffix=pick("name_suffix", ""),
         exe=exe,
         launch_options=launch_options,
@@ -279,6 +289,32 @@ def load_owned_apps(path: Path) -> dict[int, str]:
             ) from exc
         result[appid] = str(value)
     return result
+
+
+def load_ignore_file(path: Path) -> list[str]:
+    """Parse an ``--ignore-file`` (decky spec 3.4.3): a JSON list of names.
+
+    ``["Desktop", "Steam Big Picture"]`` -- Moonlight app names, matched
+    exactly like ``ignore`` in ``config.toml`` and merged with it (union) by
+    ``sync``, ``list`` and ``ignore``. Raises :class:`ConfigError` on a
+    missing or unreadable file, invalid JSON, anything but a list, or a
+    list item that is not a string -- always before the Steam library is
+    opened or Moonlight is asked anything (decky spec 3.4.8).
+    """
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ConfigError(f"ignore file {path} could not be read: {exc}") from exc
+    try:
+        payload = json.loads(raw)
+    except ValueError as exc:
+        raise ConfigError(f"ignore file {path} is not valid JSON: {exc}") from exc
+    if not isinstance(payload, list):
+        raise ConfigError(f"ignore file {path} is not a JSON list of names")
+    for item in payload:
+        if not isinstance(item, str):
+            raise ConfigError(f"ignore file {path} has a non-string entry: {item!r}")
+    return list(payload)
 
 
 def owned_apps_steamid3(path: Path) -> int | None:
