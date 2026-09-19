@@ -59,7 +59,7 @@ from moonlight_steam_sync.art.cli import ArtServices, build_services
 from moonlight_steam_sync.art.http import HardStop
 from moonlight_steam_sync.art.resolve import MatchCache, Resolver, default_cache_path
 from moonlight_steam_sync.art.select import SLOTS, Selector, existing_slot_file
-from moonlight_steam_sync.config import Config
+from moonlight_steam_sync.config import Config, ConfigError, load_ignore_file
 from moonlight_steam_sync.reporting import Reporter, match_json, slot_json_value
 from moonlight_steam_sync.shortcuts import (
     Shortcut,
@@ -185,6 +185,29 @@ def _list_host_or_report(
     return apps
 
 
+def _ignore_file_path(args: argparse.Namespace, config: Config) -> Path | None:
+    flag = getattr(args, "ignore_file", None)
+    if flag:
+        return Path(flag)
+    return config.ignore_file_path
+
+
+def _load_ignore_extra_or_report(
+    command: str, args: argparse.Namespace, config: Config, reporter: Reporter
+) -> list[str] | None:
+    """The ``--ignore-file`` names (decky spec 3.4.3), or ``None`` after
+    reporting exit 1 for a missing or invalid file -- called before the
+    library is opened or Moonlight is asked anything (spec 3.4.8)."""
+    path = _ignore_file_path(args, config)
+    if path is None:
+        return []
+    try:
+        return load_ignore_file(path)
+    except ConfigError as exc:
+        reporter.error(f"{command}: {exc}", EXIT_USAGE_OR_CONFIG)
+        return None
+
+
 def _need_host(command: str, config: Config, reporter: Reporter) -> bool:
     if config.host:
         return True
@@ -256,10 +279,13 @@ def build_plan(
     shortcuts_file: ShortcutsFile,
     *,
     limit: int | None = None,
+    ignore_extra: Sequence[str] = (),
 ) -> Plan:
     """Diff the host list against the library (spec 3.7).
 
-    Ignore is matched on the Moonlight app name, exact (spec 3.2). Ownership
+    Ignore is matched on the Moonlight app name, exact (spec 3.2), against
+    ``config.ignore`` plus ``ignore_extra`` -- the ``--ignore-file`` names
+    (decky spec 3.4.3), a union. Ownership
     is by ``Exe`` (spec 3.3); the name behind an owned entry is recovered
     from its launch options. A host app whose would-be appid is already in
     the file is "the same shortcut" (spec 3.6) even if the name recovery
@@ -272,7 +298,7 @@ def build_plan(
         owned_by_name.setdefault(name, entry)
 
     plan = Plan(host=config.host, apps=list(apps), limit=limit)
-    ignore = set(config.ignore)
+    ignore = set(config.ignore) | set(ignore_extra)
     seen: set[str] = set()
     apps_by_name: dict[str, moonlight.App] = {}
     additions: list[Addition] = []
@@ -660,6 +686,9 @@ def cmd_sync(
     if options.limit is not None and options.limit < 0:
         reporter.error("sync: --limit must be zero or more", EXIT_USAGE_OR_CONFIG)
         return EXIT_USAGE_OR_CONFIG
+    ignore_extra = _load_ignore_extra_or_report("sync", args, config, reporter)
+    if ignore_extra is None:
+        return EXIT_USAGE_OR_CONFIG
 
     if not _need_host("sync", config, reporter):
         return EXIT_USAGE_OR_CONFIG
@@ -670,7 +699,9 @@ def cmd_sync(
     if apps is None:
         return EXIT_MOONLIGHT_UNREACHABLE
 
-    plan = build_plan(config, apps, library.file, limit=options.limit)
+    plan = build_plan(
+        config, apps, library.file, limit=options.limit, ignore_extra=ignore_extra
+    )
     reporter.line(plan.header())
     reporter.plan(**_plan_event_fields(plan))
 
@@ -963,6 +994,9 @@ def cmd_list(
         out, err, json=bool(getattr(args, "json", False)), command="list", version=_pkg_version()
     )
     reporter.start()
+    ignore_extra = _load_ignore_extra_or_report("list", args, config, reporter)
+    if ignore_extra is None:
+        return EXIT_USAGE_OR_CONFIG
     if not _need_host("list", config, reporter):
         return EXIT_USAGE_OR_CONFIG
     library = _open_library_or_report("list", reporter)
@@ -988,7 +1022,7 @@ def cmd_list(
         if apps is None:
             return EXIT_MOONLIGHT_UNREACHABLE
 
-    plan = build_plan(config, apps, library.file)
+    plan = build_plan(config, apps, library.file, ignore_extra=ignore_extra)
     match_cache = MatchCache(deps.cache_path or default_cache_path())
     other_hosts = _other_hosts_apps(hosts_directory, config.host)
     seen: set[str] = set()
@@ -1064,6 +1098,9 @@ def cmd_ignore(
         out, err, json=bool(getattr(args, "json", False)), command="ignore", version=_pkg_version()
     )
     reporter.start()
+    ignore_extra = _load_ignore_extra_or_report("ignore", args, config, reporter)
+    if ignore_extra is None:
+        return EXIT_USAGE_OR_CONFIG
 
     names = list(config.ignore)
     if getattr(args, "all", False):
@@ -1075,7 +1112,11 @@ def cmd_ignore(
         apps = _list_host_or_report("ignore", config, deps, reporter)
         if apps is None:
             return EXIT_MOONLIGHT_UNREACHABLE
-        plan = build_plan(config, apps, library.file)
+        # The --ignore-file names already keep an app out of `to_add`, so
+        # they are not offered here again; the printed block stays what it
+        # always was -- config.toml's list plus the new names -- because it
+        # is meant for config.toml (decky spec 3.4.3).
+        plan = build_plan(config, apps, library.file, ignore_extra=ignore_extra)
         names.extend(item.app.name for item in plan.to_add)
     else:
         names.extend(getattr(args, "names", []) or [])
