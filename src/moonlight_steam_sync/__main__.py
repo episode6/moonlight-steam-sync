@@ -16,14 +16,22 @@ file not yet written -- defers the signal itself (``sync.sigint_deferred``).
 from __future__ import annotations
 
 import argparse
+import os
 import platform
 import sys
 from importlib import metadata
 from pathlib import Path
 
-from moonlight_steam_sync import __version__, moonlight, steam, sync
-from moonlight_steam_sync.art.cli import ProviderFactory, cmd_art, cmd_status
-from moonlight_steam_sync.config import DEFAULT_KEY_FILE, load_config
+from moonlight_steam_sync import __version__, hosts, moonlight, steam, sync
+from moonlight_steam_sync.art.cli import ProviderFactory, cmd_art, cmd_search, cmd_status
+from moonlight_steam_sync.config import (
+    DEFAULT_KEY_FILE,
+    ConfigError,
+    load_config,
+    load_owned_apps,
+    owned_apps_steamid3,
+    toml_host,
+)
 
 # Exit codes (spec 3.3).
 EXIT_OK = 0
@@ -64,6 +72,11 @@ def build_parser() -> argparse.ArgumentParser:
         description="Sync a Moonlight host's game list into Steam shortcuts, with artwork.",
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {_version()}")
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="one JSON object per stdout line; human progress moves to stderr (spec 3.4.6)",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     sync_p = sub.add_parser("sync", help="add missing shortcuts and their artwork")
@@ -119,8 +132,33 @@ def build_parser() -> argparse.ArgumentParser:
 
     list_p = sub.add_parser("list", help="what the host publishes: added / ignored / new")
     _add_common_host_flag(list_p)
+    list_p.add_argument(
+        "--cached",
+        action="store_true",
+        help="serve the per-host list cache instead of running moonlight (spec 3.12)",
+    )
 
-    sub.add_parser("status", help="owned shortcuts and which art slots each has on disk")
+    status_p = sub.add_parser(
+        "status", help="owned shortcuts and which art slots each has on disk"
+    )
+    _add_common_host_flag(status_p)
+    status_p.add_argument(
+        "--owned-apps", metavar="PATH", help="a plugin-written owned-apps JSON file (spec 3.4.1)"
+    )
+
+    search_p = sub.add_parser("search", help="find a Steam/SteamGridDB candidate for a title")
+    search_p.add_argument("term")
+    search_p.add_argument(
+        "--owned-apps", metavar="PATH", help="a plugin-written owned-apps JSON file (spec 3.4.1)"
+    )
+
+    host_p = sub.add_parser("host", help="show or change the active Moonlight host (spec 3.12)")
+    host_sub = host_p.add_subparsers(dest="host_action", required=True)
+    host_show_p = host_sub.add_parser("show", help="print the resolved host and where it came from")
+    _add_common_host_flag(host_show_p)
+    host_set_p = host_sub.add_parser("set", help="write the active-host state file")
+    host_set_p.add_argument("name")
+    host_sub.add_parser("clear", help="remove the active-host state file")
 
     ignore_p = sub.add_parser(
         "ignore", help="print TOML ignore = [...] lines to paste into config"
@@ -138,10 +176,15 @@ def build_parser() -> argparse.ArgumentParser:
     remove_group.add_argument("names", nargs="*", default=[], metavar="NAME")
 
     launch_p = sub.add_parser("launch", help='exec moonlight stream <host> "Name"')
+    _add_common_host_flag(launch_p)
     launch_p.add_argument("name")
     launch_p.add_argument("extra", nargs=argparse.REMAINDER)
 
-    sub.add_parser("doctor", help="report the environment this tool will run in")
+    doctor_p = sub.add_parser("doctor", help="report the environment this tool will run in")
+    _add_common_host_flag(doctor_p)
+    doctor_p.add_argument(
+        "--owned-apps", metavar="PATH", help="a plugin-written owned-apps JSON file (spec 3.4.1)"
+    )
 
     return parser
 
@@ -170,9 +213,34 @@ def _steam_user_line(root: Path | None) -> str:
     return f"steam user:    {who} -> {user.shortcuts_path}"
 
 
+def _session_kind() -> str:
+    """``gamescope``/``desktop``/``unknown`` (spec 3.4.7, the PR-0 probe)."""
+    gamescope_wayland = os.environ.get("GAMESCOPE_WAYLAND_DISPLAY", "")
+    xdg_desktop = os.environ.get("XDG_CURRENT_DESKTOP", "")
+    if gamescope_wayland or "gamescope" in xdg_desktop.casefold():
+        return "gamescope"
+    if xdg_desktop or os.environ.get("WAYLAND_DISPLAY") or os.environ.get("DISPLAY"):
+        return "desktop"
+    return "unknown"
+
+
+def _session_line() -> str:
+    gamescope_wayland = os.environ.get("GAMESCOPE_WAYLAND_DISPLAY", "")
+    xdg_desktop = os.environ.get("XDG_CURRENT_DESKTOP", "")
+    return (
+        f"session:       {_session_kind()} (XDG_CURRENT_DESKTOP={xdg_desktop or '(unset)'}, "
+        f"GAMESCOPE_WAYLAND_DISPLAY={gamescope_wayland or '(unset)'})"
+    )
+
+
 def cmd_doctor(args: argparse.Namespace) -> int:
     """Print the environment report spec 3.3 promises: steam dir, user,
     python, moonlight path, key present?, steam running?
+
+    Spec 3.4.7 appends three more lines unconditionally (``session:``,
+    ``active host:``, ``cached hosts:``) and an ``owned-apps file:`` line
+    when ``--owned-apps`` is given; ``doctor`` never exits 1 over a bad
+    file, since it is a diagnostic.
     """
     cfg = load_config(args)
 
@@ -198,6 +266,23 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     lines.append(f"config file:   {cfg.config_path} ({config_state})")
     lines.append(f"key file:      {DEFAULT_KEY_FILE}")
     lines.append(f"configured host: {cfg.host or '(none set)'}")
+
+    lines.append(_session_line())
+    lines.append(hosts.format_active_host_line(cfg.host, cfg.host_source))
+    lines.append(hosts.format_cached_hosts_line(hosts.list_cached_hosts(hosts.hosts_dir())))
+
+    owned_apps_flag = getattr(args, "owned_apps", None)
+    if owned_apps_flag:
+        owned_path = Path(owned_apps_flag)
+        try:
+            apps = load_owned_apps(owned_path)
+        except ConfigError as exc:
+            lines.append(f"owned-apps file: {owned_path} (invalid: {exc})")
+        else:
+            steamid3 = owned_apps_steamid3(owned_path)
+            lines.append(
+                f"owned-apps file: {owned_path} ({len(apps)} apps, steamid3 {steamid3})"
+            )
 
     print("\n".join(lines))
     return EXIT_OK
@@ -259,7 +344,24 @@ def main(
         if args.command == "art":
             return cmd_art(args, load_config(args), provider_factory=provider_factory)
         if args.command == "status":
-            return cmd_status(args, load_config(args), provider_factory=provider_factory)
+            return cmd_status(
+                args,
+                load_config(args),
+                provider_factory=provider_factory,
+                cache_path=deps.cache_path,
+                hosts_dir=deps.hosts_dir,
+            )
+        if args.command == "search":
+            return cmd_search(args, load_config(args), cache_path=deps.cache_path)
+        if args.command == "host":
+            cfg = load_config(args)
+            return hosts.cmd_host(
+                args,
+                config_path=cfg.config_path,
+                config_host=toml_host(cfg.config_path),
+                json_mode=bool(getattr(args, "json", False)),
+                version=_version(),
+            )
         if args.command == "sync":
             return sync.cmd_sync(args, load_config(args), deps=deps)
         if args.command == "list":

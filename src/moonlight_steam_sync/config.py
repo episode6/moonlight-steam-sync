@@ -56,6 +56,7 @@ __all__ = [
     "load_config",
     "load_owned_apps",
     "owned_apps_steamid3",
+    "toml_host",
 ]
 
 
@@ -234,6 +235,16 @@ def load_config(
         config_path=config_path,
     )
     return cfg
+
+
+def toml_host(config_path: Path) -> str:
+    """The raw ``host`` key from ``config.toml``, ignoring the state file.
+
+    Used by ``host clear`` (spec 3.4.8) to report what applies once the
+    state file no longer takes precedence, without re-running the whole
+    ``--host`` / state-file / config-file resolution chain.
+    """
+    return str(_load_toml(config_path).get("host") or "")
 
 
 def load_owned_apps(path: Path) -> dict[int, str]:

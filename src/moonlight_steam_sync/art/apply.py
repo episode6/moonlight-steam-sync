@@ -70,6 +70,12 @@ class ArtTarget:
     name: str
     appid: int
     grid_dir: Path
+    #: ``Shortcut.is_hidden`` / ``.app_name`` -- filled in by
+    #: :class:`SteamShortcutProvider` for ``status --json`` (spec 3.4.6);
+    #: unused by the art phase itself, so every existing caller's default
+    #: (``False`` / ``""``) is fine.
+    hidden: bool = False
+    app_name: str = ""
 
 
 class TargetProvider(Protocol):
@@ -175,6 +181,8 @@ class SteamShortcutProvider:
                 name=entry.moonlight_name(self._config.launch_options, self._config.name_suffix),
                 appid=entry.appid,
                 grid_dir=grid_dir,
+                hidden=bool(entry.is_hidden),
+                app_name=entry.app_name,
             )
             for entry in shortcuts_file.owned(self._config.exe)
         ]

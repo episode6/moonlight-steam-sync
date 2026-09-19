@@ -46,6 +46,7 @@ from typing import Any, TextIO
 
 from moonlight_steam_sync import hosts, moonlight, steam
 from moonlight_steam_sync import version as _pkg_version
+from moonlight_steam_sync.art import resolve as art_resolve
 from moonlight_steam_sync.art.apply import (
     ArtTarget,
     RunSummary,
@@ -55,10 +56,10 @@ from moonlight_steam_sync.art.apply import (
 )
 from moonlight_steam_sync.art.cli import ArtServices, build_services
 from moonlight_steam_sync.art.http import HardStop
-from moonlight_steam_sync.art.resolve import Resolver
-from moonlight_steam_sync.art import resolve as art_resolve
+from moonlight_steam_sync.art.resolve import MatchCache, Resolver, default_cache_path
 from moonlight_steam_sync.art.select import SLOTS, Selector, existing_slot_file
 from moonlight_steam_sync.config import Config
+from moonlight_steam_sync.reporting import Reporter, match_json, slot_json_value
 from moonlight_steam_sync.shortcuts import (
     Shortcut,
     ShortcutsError,
@@ -82,98 +83,6 @@ RESUME_HINT = "interrupted; resume with the same command"
 LABEL_ADDED = "added"
 LABEL_IGNORED = "ignored"
 LABEL_NEW = "new"
-
-
-# ---------------------------------------------------------------------------
-# --json: the event stream (spec 3.4.6)
-# ---------------------------------------------------------------------------
-
-
-class Reporter:
-    """Routes every human/machine line for one command (spec 3.4.6).
-
-    ``json=False`` (the default, and every existing call site before this
-    PR): :meth:`line` prints to ``out``, human formatting byte-identical to
-    today, and :meth:`event` does nothing -- existing tests never see a
-    change. ``json=True``: ``out`` carries one JSON object per line and
-    nothing else, :meth:`line` moves the human text to ``err``, and
-    :meth:`event` prints the JSON. :meth:`start` and :meth:`error` are
-    unconditional (they also print/emit when ``json`` is false: ``start``
-    then does nothing visible, since human mode has no such line, and
-    ``error`` still gets the human error text on ``err``).
-    """
-
-    def __init__(
-        self,
-        out: TextIO,
-        err: TextIO,
-        *,
-        json: bool = False,
-        command: str = "",
-        version: str = "",
-    ) -> None:
-        self.out = out
-        self.err = err
-        self.json = json
-        self.command = command
-        self.version = version
-
-    def start(self) -> None:
-        self.event("start", schema=1, version=self.version, command=self.command)
-
-    def line(self, text: str) -> None:
-        """A human progress line: ``out`` normally, ``err`` under ``--json``.
-
-        This is what every plain ``print(..., file=out)`` in this module
-        used to be; the destination only changes when ``json`` is true.
-        """
-        print(text, file=self.err if self.json else self.out)
-
-    def note(self, message: str) -> None:
-        """A ``note:`` diagnostic -- always on ``err``, plus a ``note`` event
-        under ``--json``. These were already ``err``-only before this PR."""
-        print(f"note: {message}", file=self.err)
-        self.event("note", message=message)
-
-    def error(self, message: str, exit_code: int) -> None:
-        """The human error text -- always on ``err`` -- plus an ``error`` event."""
-        print(message, file=self.err)
-        self.event("error", exit=exit_code, message=message)
-
-    def event(self, name: str, **fields: Any) -> None:
-        if not self.json:
-            return
-        print(json.dumps({"event": name, **fields}, sort_keys=True), file=self.out)
-
-
-def match_json(match: Any) -> dict[str, Any] | None:
-    """``{steam_appid, sgdb_id, matched_name, how}``, or ``None`` (spec 3.4.6).
-
-    ``match`` is a :class:`~moonlight_steam_sync.art.resolve.Match`, or
-    ``None`` when the title has no cache entry (never resolved, or a
-    ``skipped``/``none`` override that this run has not touched).
-    """
-    if match is None:
-        return None
-    return {
-        "steam_appid": match.steam_appid,
-        "sgdb_id": match.sgdb_id,
-        "matched_name": match.matched_name,
-        "how": match.how,
-    }
-
-
-#: ``title.slots`` / ``entry.slots`` vocabulary (spec 3.4.6): the human
-#: progress line keeps printing ``official``/``community``, JSON maps those
-#: two source names onto ``steam``/``sgdb``.
-_SLOT_JSON_SOURCE = {
-    "official": "steam",
-    "community": "sgdb",
-}
-
-
-def slot_json_value(source: str) -> str:
-    return _SLOT_JSON_SOURCE.get(source, source)
 
 
 # ---------------------------------------------------------------------------
@@ -750,7 +659,10 @@ def cmd_sync(
         if services is not None:
             services.cache.flush()
         reporter.event(
-            "summary", **_summary_event_fields(plan, None, None, exit_code=EXIT_SIGINT, stop_reason="interrupted")
+            "summary",
+            **_summary_event_fields(
+                plan, None, None, exit_code=EXIT_SIGINT, stop_reason="interrupted"
+            ),
         )
         reporter.error(RESUME_HINT, EXIT_SIGINT)
         return EXIT_SIGINT
@@ -765,7 +677,6 @@ def _sync(
     deps: Deps,
     reporter: Reporter,
 ) -> int:
-    out, err = reporter.out, reporter.err
     art_out = reporter.err if reporter.json else reporter.out
     if not plan.to_add and not plan.adopted:
         reporter.line("nothing to do")
@@ -801,7 +712,9 @@ def _sync(
         if summary.stopped_early:
             # Spec 3.9 items 1 and 4: everything durable is already on disk,
             # shortcuts.vdf is untouched, and the same command finishes the job.
-            exit_code = EXIT_SIGINT if summary.stop_reason == "interrupted" else EXIT_NETWORK_STOPPED
+            exit_code = (
+                EXIT_SIGINT if summary.stop_reason == "interrupted" else EXIT_NETWORK_STOPPED
+            )
             reporter.event(
                 "summary",
                 **_summary_event_fields(
@@ -834,7 +747,10 @@ def _sync(
             art_written=bool(summary and summary.written),
         )
     except SteamRunningError as exc:
-        reporter.event("summary", **_summary_event_fields(plan, summary, None, exit_code=EXIT_STEAM_RUNNING))
+        reporter.event(
+            "summary",
+            **_summary_event_fields(plan, summary, None, exit_code=EXIT_STEAM_RUNNING),
+        )
         reporter.error(f"sync: {exc}", EXIT_STEAM_RUNNING)
         return EXIT_STEAM_RUNNING
 
@@ -842,6 +758,12 @@ def _sync(
     reporter.event("commit", **_commit_event_fields(commit))
     for line in _final_summary(plan, summary, commit):
         reporter.line(line)
+        if line == "restart Steam to see the new artwork" or line.endswith(
+            "rerun to add the next batch"
+        ):
+            # Spec 3.4.6: these two human lines are additionally emitted as
+            # `note` events under --json, on top of the plain `line` above.
+            reporter.event("note", message=line)
     reporter.event("summary", **_summary_event_fields(plan, summary, commit, exit_code=EXIT_OK))
     return EXIT_OK
 
@@ -938,6 +860,54 @@ def _print_slot_plan(
 # ---------------------------------------------------------------------------
 
 
+def _other_hosts_apps(hosts_directory: Path, current_host: str) -> dict[str, list[str]]:
+    """Every *other* cached host's app names, keyed by host name (spec 3.12)."""
+    result: dict[str, list[str]] = {}
+    for info in hosts.list_cached_hosts(hosts_directory):
+        if info.name.casefold() == current_host.casefold():
+            continue
+        cache = hosts.read_host_cache(hosts_directory, info.name)
+        if cache is not None:
+            result[info.name] = cache.apps
+    return result
+
+
+def _same_game_as(
+    name: str, match_cache: MatchCache, other_hosts: dict[str, list[str]]
+) -> list[dict[str, str]]:
+    """``same-game-as`` pairs for *name* (spec 3.4.8, 3.12).
+
+    Two names are "the same game" when both resolved (``how`` not
+    ``none``/``skipped``) and share a non-null ``steam_appid``, or -- when
+    neither has one -- a non-null ``sgdb_id``. Identical spellings are never
+    reported (one shared entry); a name missing from ``matches.json`` is
+    skipped entirely, never resolved for this.
+    """
+    entry = match_cache.get(name)
+    if entry is None or entry.how in ("none", "skipped"):
+        return []
+    results: list[dict[str, str]] = []
+    for host_name, names in other_hosts.items():
+        for other_name in dict.fromkeys(names):
+            if other_name == name:
+                continue
+            other = match_cache.get(other_name)
+            if other is None or other.how in ("none", "skipped"):
+                continue
+            same = False
+            if entry.steam_appid is not None and entry.steam_appid == other.steam_appid or (
+                entry.steam_appid is None
+                and other.steam_appid is None
+                and entry.sgdb_id is not None
+                and entry.sgdb_id == other.sgdb_id
+            ):
+                same = True
+            if same:
+                results.append({"name": other_name, "host": host_name})
+                break
+    return results
+
+
 def cmd_list(
     args: argparse.Namespace,
     config: Config,
@@ -946,28 +916,77 @@ def cmd_list(
     out: TextIO | None = None,
     err: TextIO | None = None,
 ) -> int:
-    """``moonlight-steam-sync list``: the host's apps, annotated added / ignored / new."""
-    del args
+    """``moonlight-steam-sync list``: the host's apps, annotated added / ignored / new.
+
+    ``--cached`` (spec 3.4.6/3.12) never runs Moonlight: it serves the
+    per-host list cache and exits 3, the same code a failed live list gets,
+    when there is none for this host.
+    """
     deps = deps or Deps()
     out = out or sys.stdout
     err = err or sys.stderr
-    if not _need_host("list", config, err):
+    reporter = Reporter(
+        out, err, json=bool(getattr(args, "json", False)), command="list", version=_pkg_version()
+    )
+    reporter.start()
+    if not _need_host("list", config, reporter):
         return EXIT_USAGE_OR_CONFIG
-    library = _open_library_or_report("list", err)
+    library = _open_library_or_report("list", reporter)
     if library is None:
         return EXIT_USAGE_OR_CONFIG
-    apps = _list_host_or_report("list", config, deps, err)
-    if apps is None:
-        return EXIT_MOONLIGHT_UNREACHABLE
+
+    hosts_directory = deps.resolved_hosts_dir()
+    cached_mode = bool(getattr(args, "cached", False))
+    cached_when: str | None = None
+    if cached_mode:
+        cache = hosts.read_host_cache(hosts_directory, config.host)
+        if cache is None:
+            reporter.error(
+                f"list: no cached app list for host {config.host}; run "
+                f"`list --host {config.host}` while it is reachable",
+                EXIT_MOONLIGHT_UNREACHABLE,
+            )
+            return EXIT_MOONLIGHT_UNREACHABLE
+        apps = [moonlight.App(name=n) for n in cache.apps]
+        cached_when = cache.when
+    else:
+        apps = _list_host_or_report("list", config, deps, reporter)
+        if apps is None:
+            return EXIT_MOONLIGHT_UNREACHABLE
 
     plan = build_plan(config, apps, library.file)
+    match_cache = MatchCache(deps.cache_path or default_cache_path())
+    other_hosts = _other_hosts_apps(hosts_directory, config.host)
     seen: set[str] = set()
+    count = 0
     for app in plan.apps:
         if app.name in seen:
             continue
         seen.add(app.name)
-        print(f"{plan.label(app):8} {app.name}", file=out)
-    print(plan.header(), file=out)
+        label = plan.label(app)
+        kind = LABEL_IGNORED if label == LABEL_IGNORED else "shortcut"
+        entry = match_cache.get(app.name)
+        match = match_json(entry) if entry is not None else None
+        fuzzy = bool(entry and entry.how.endswith(":fuzzy"))
+        same = _same_game_as(app.name, match_cache, other_hosts)
+        reporter.line(f"{label:8} {app.name}")
+        for item in same:
+            reporter.line(f"         same-game-as: {item['name']} ({item['host']})")
+        reporter.event(
+            "app",
+            name=app.name,
+            label=label,
+            kind=kind,
+            match=match,
+            fuzzy=fuzzy,
+            duplicate_of=None,
+            same_game_as=same,
+            cached=cached_mode,
+            cached_when=cached_when,
+        )
+        count += 1
+    reporter.line(plan.header())
+    reporter.event("end", count=count, host=config.host)
     return EXIT_OK
 
 
@@ -1001,20 +1020,25 @@ def cmd_ignore(
     The tool never writes ``config.toml`` (spec 6.7): the printed array is
     the current ``ignore`` list plus, for ``--all``, every host app that has
     no shortcut yet -- the "draw a line under everything on the PC" workflow
-    from spec 3.7.
+    from spec 3.7. Under ``--json`` the report moves to stderr and the
+    command emits ``start`` then ``end`` (spec 3.4.6).
     """
     deps = deps or Deps()
     out = out or sys.stdout
     err = err or sys.stderr
+    reporter = Reporter(
+        out, err, json=bool(getattr(args, "json", False)), command="ignore", version=_pkg_version()
+    )
+    reporter.start()
 
     names = list(config.ignore)
     if getattr(args, "all", False):
-        if not _need_host("ignore", config, err):
+        if not _need_host("ignore", config, reporter):
             return EXIT_USAGE_OR_CONFIG
-        library = _open_library_or_report("ignore", err)
+        library = _open_library_or_report("ignore", reporter)
         if library is None:
             return EXIT_USAGE_OR_CONFIG
-        apps = _list_host_or_report("ignore", config, deps, err)
+        apps = _list_host_or_report("ignore", config, deps, reporter)
         if apps is None:
             return EXIT_MOONLIGHT_UNREACHABLE
         plan = build_plan(config, apps, library.file)
@@ -1023,12 +1047,14 @@ def cmd_ignore(
         names.extend(getattr(args, "names", []) or [])
 
     deduped = list(dict.fromkeys(names))
-    for line in ignore_lines(deduped):
-        print(line, file=out)
+    lines = ignore_lines(deduped)
+    for line in lines:
+        reporter.line(line)
     print(
         f"paste the block above into {config.config_path} (this tool never writes it)",
         file=err,
     )
+    reporter.event("end", count=len(lines))
     return EXIT_OK
 
 
@@ -1069,8 +1095,12 @@ def cmd_remove(
     deps = deps or Deps()
     out = out or sys.stdout
     err = err or sys.stderr
+    reporter = Reporter(
+        out, err, json=bool(getattr(args, "json", False)), command="remove", version=_pkg_version()
+    )
+    reporter.start()
 
-    library = _open_library_or_report("remove", err)
+    library = _open_library_or_report("remove", reporter)
     if library is None:
         return EXIT_USAGE_OR_CONFIG
     owned = library.file.owned(config.exe)
@@ -1088,20 +1118,22 @@ def cmd_remove(
                 "remove: no owned shortcut named " + ", ".join(repr(n) for n in unknown),
                 file=err,
             )
-            print("remove: nothing was touched", file=err)
+            reporter.error("remove: nothing was touched", EXIT_USAGE_OR_CONFIG)
             return EXIT_USAGE_OR_CONFIG
         victims = [by_name[name] for name in dict.fromkeys(wanted)]
 
     if not victims:
-        print("nothing to remove", file=out)
+        reporter.line("nothing to remove")
+        reporter.event("summary", added=0, replaced=0, removed=0, exit=EXIT_OK)
         return EXIT_OK
 
     for entry in victims:
         library.file.remove(entry)
+    write_out = reporter.err if reporter.json else reporter.out
     try:
-        commit = commit_shortcuts(library.file, config=config, runner=deps.runner, out=out)
+        commit = commit_shortcuts(library.file, config=config, runner=deps.runner, out=write_out)
     except SteamRunningError as exc:
-        print(f"remove: {exc}", file=err)
+        reporter.error(f"remove: {exc}", EXIT_STEAM_RUNNING)
         return EXIT_STEAM_RUNNING
 
     deleted = 0
@@ -1110,8 +1142,10 @@ def cmd_remove(
             with contextlib.suppress(OSError):
                 path.unlink()
                 deleted += 1
-    print(commit.describe(library.user.shortcuts_path), file=out)
-    print(f"removed {len(victims)} shortcut(s) and {deleted} grid file(s)", file=out)
+    reporter.line(commit.describe(library.user.shortcuts_path))
+    reporter.event("commit", **_commit_event_fields(commit))
+    reporter.line(f"removed {len(victims)} shortcut(s) and {deleted} grid file(s)")
+    reporter.event("summary", added=0, replaced=0, removed=len(victims), exit=EXIT_OK)
     return EXIT_OK
 
 

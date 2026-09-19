@@ -27,10 +27,11 @@ import contextlib
 import json
 import os
 import re
+import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
 from moonlight_steam_sync.art.resolve import cache_dir
 
@@ -187,16 +188,130 @@ def list_cached_hosts(directory: Path) -> list[CachedHostInfo]:
     return infos
 
 
+# ---------------------------------------------------------------------------
+# `host show|set|clear` (spec 3.4/3.4.8/3.12)
+# ---------------------------------------------------------------------------
+
+#: "flag"/"state"/"config" (spec 3.4.6/3.4.8) -> the human labels doctor and
+#: `host` use.
+_SOURCE_LABEL = {"flag": "--host", "state": "state file", "config": "config"}
+
+# The exact 15-column label padding spec 3.4.7's examples use.
+_ACTIVE_HOST_LABEL = "active host:   "
+_CACHED_HOSTS_LABEL = "cached hosts:  "
+
+
+def _cached_hosts_text(infos: list[CachedHostInfo]) -> str:
+    if not infos:
+        return "none"
+    return ", ".join(f"{info.name} ({info.count} apps, {info.when})" for info in infos)
+
+
+def format_active_host_line(host: str, source: str) -> str:
+    """``active host:   NAME (state file)`` / ``(none set)`` (spec 3.4.7/3.4.8)."""
+    if not host:
+        return f"{_ACTIVE_HOST_LABEL}(none set)"
+    return f"{_ACTIVE_HOST_LABEL}{host} ({_SOURCE_LABEL.get(source, source)})"
+
+
+def format_cached_hosts_line(infos: list[CachedHostInfo]) -> str:
+    return f"{_CACHED_HOSTS_LABEL}{_cached_hosts_text(infos)}"
+
+
+def resolve_host(host_flag: str, state_file: Path, config_host: str) -> tuple[str, str]:
+    """``--host`` flag -> state file -> ``config.toml`` (spec 3.4.8/3.12)."""
+    if host_flag:
+        return host_flag, "flag"
+    state_host = read_active_host(state_file)
+    if state_host:
+        return state_host, "state"
+    return config_host, "config"
+
+
+def cmd_host(
+    args: Any,
+    *,
+    config_path: Path,
+    config_host: str,
+    state_file: Path | None = None,
+    hosts_directory: Path | None = None,
+    out: TextIO | None = None,
+    err: TextIO | None = None,
+    json_mode: bool = False,
+    version: str = "",
+) -> int:
+    """``moonlight-steam-sync host show|set|clear`` (spec 3.4, 3.4.8, 3.12).
+
+    Takes the config-file ``host`` value and the config path as plain
+    arguments rather than a :class:`~moonlight_steam_sync.config.Config`, so
+    this module keeps importing nothing from ``config`` or ``sync`` (module
+    docstring).
+    """
+    out = out or sys.stdout
+    err = err or sys.stderr
+    state_file = state_file if state_file is not None else active_host_path()
+    hosts_directory = hosts_directory if hosts_directory is not None else hosts_dir()
+
+    def emit(event_name: str, **fields: Any) -> None:
+        if json_mode:
+            print(json.dumps({"event": event_name, **fields}, sort_keys=True), file=out)
+
+    emit("start", schema=1, version=version, command="host")
+
+    def report_state(host: str, source: str) -> None:
+        infos = list_cached_hosts(hosts_directory)
+        print(format_active_host_line(host, source), file=err if json_mode else out)
+        print(format_cached_hosts_line(infos), file=err if json_mode else out)
+        emit(
+            "host",
+            name=host or None,
+            source=source,
+            cached_hosts=[
+                {"name": info.name, "when": info.when, "count": info.count} for info in infos
+            ],
+        )
+
+    action = getattr(args, "host_action", None)
+    if action == "set":
+        name = str(args.name)
+        write_active_host(name, state_file)
+        report_state(name, "state")
+        return 0
+    if action == "clear":
+        clear_active_host(state_file)
+        host, source = resolve_host("", state_file, config_host)
+        report_state(host, source)
+        return 0
+
+    # "show" (default)
+    host_flag = str(getattr(args, "host", "") or "")
+    host, source = resolve_host(host_flag, state_file, config_host)
+    if not host:
+        message = (
+            "host: no host configured; pass --host, run `host set NAME`, "
+            f"or set `host` in {config_path}"
+        )
+        print(message, file=err)
+        emit("error", exit=1, message=message)
+        return 1
+    report_state(host, source)
+    return 0
+
+
 __all__ = [
     "CachedHostInfo",
     "HostCache",
     "active_host_path",
     "clear_active_host",
+    "cmd_host",
+    "format_active_host_line",
+    "format_cached_hosts_line",
     "host_cache_timestamp",
     "hosts_dir",
     "list_cached_hosts",
     "read_active_host",
     "read_host_cache",
+    "resolve_host",
     "slug",
     "state_dir",
     "write_active_host",
