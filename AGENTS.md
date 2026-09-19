@@ -53,7 +53,11 @@ started (spec 3.11).
   box-art source for the portrait slot any more.
 - **The tool never writes `config.toml`.** `ignore --all` *prints* TOML lines
   for the user to paste in; it does not edit the file. This is a deliberate
-  decision (spec 6.7), not an oversight -- don't silently change it.
+  decision (spec 6.7), not an oversight -- don't silently change it. The
+  Decky plugin's own state goes elsewhere for the same reason: its ignores
+  arrive as `--ignore-file` (a JSON list, unioned with `ignore`) and its
+  match fixes as pins in `matches.json` (`match`), which *prints* the
+  equivalent `[overrides]` line instead of writing it.
 
 ## Module map (spec 3.4)
 
@@ -75,10 +79,11 @@ moonlight_steam_sync/
     http.py        urllib transport seam, User-Agent, timeouts, pacing, backoff, the 429 hard stop
     sgdb.py        API client (urllib): search, game(platformdata), grids/heroes/logos/icons
     steamstore.py  storesearch, GetApps icon hash, CDN URL builders
-    resolve.py     title -> Match{steam_appid?, sgdb_id?, how}; match cache (flushed per title)
+    resolve.py     title -> Match{steam_appid?, sgdb_id?, how}; match cache (flushed per title),
+                   pins (MatchCache.pin/unpin) and the stale_art flag
     select.py      per-slot asset choice policy; download; mime sniff -> ext
     apply.py       write grid files for an appid (skip existing), set icon field
-    cli.py         the `art`, `status` and `search` subcommands
+    cli.py         the `art`, `status`, `search` and `match` subcommands
   sync.py          the orchestration: list -> diff -> art -> write -> restart; progress lines
 ```
 
@@ -215,7 +220,7 @@ the ones that mention resumability by name -- must keep these invariants:
 2. **The match cache is flushed after every title**, not batched to the end.
    Negative results are cached with a timestamp and are not re-queried for 7
    days unless `--retry-missing` (or `art --force`, which ignores the cache
-   outright).
+   outright -- except for pins, below).
 3. **Downloads are atomic**: write to `<file>.part`, validate magic bytes,
    then rename into place. A killed run never leaves a truncated image that
    would count as "done".
@@ -271,6 +276,20 @@ every title (`tests/test_art_apply.py`).
   `MatchCache.record_missing_slot` refuses to invent an entry for a title
   that never resolved, so the slot loop cannot cache a miss through the back
   door.
+- **Pins are the one cache state `--force` keeps.** `match` writes a
+  `how: "pinned"` entry into `matches.json`, and `Resolver.resolve()`
+  returns it *before* it looks at `force` or `retry_missing`, so neither
+  `art --force` nor `--retry-missing` ever re-searches or overwrites a
+  pinned title -- not even a `--none` pin (which makes no lookups at all).
+  Only `match --unpin` or another `match` changes one. An `[overrides]`
+  entry in `config.toml` still wins over a pin (config beats cache), and
+  `CACHE_VERSION` stays 1: `stale_art` is written only while true, so a
+  cache with no pinned or stale entry is byte-identical to one written
+  before pins existed. `match`'s immediate path (delete the title's grid
+  files, clear its `icon`) goes through `sync.commit_shortcuts()` like
+  `remove`; `--defer-art` only marks the entry `stale_art`. Acting on that
+  flag (a `rematched` replacement in `build_plan`, decky spec 3.4.2) is
+  the owned-apps PR's job; until it lands, `sync` keeps the art on disk.
 - **Every network failure is an `HttpError`, including one halfway through a
   response body.** A connection that dies while a download is streaming used
   to escape as a bare `OSError` past every handler; `Fetcher` now translates

@@ -6,10 +6,10 @@ project uses [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
-The first slice of the Decky-plugin CLI work
-(`~/specs/moonlight-steam-sync/decky-plugin.md`, PR-1): additive and
-optional, so every command's behaviour is unchanged when none of the flags
-below are passed.
+The first slices of the Decky-plugin CLI work
+(`~/specs/moonlight-steam-sync/decky-plugin.md`, PR-1 and PR-2): additive
+and optional, so every command's behaviour is unchanged when none of the
+flags below are passed and no title has been pinned.
 
 ### Added
 
@@ -30,7 +30,24 @@ below are passed.
 - `status --owned-apps PATH`: accepted and validated (a later release uses
   it to mark owned titles); no output changes yet.
 - `doctor` gains `session:`, `active host:` and `cached hosts:` lines, plus
-  an `owned-apps file:` line when `--owned-apps` is passed.
+  an `owned-apps file:` line when `--owned-apps` is passed and an `ignore
+  file:` line when `--ignore-file` is.
+- `match "Name" --steam APPID | --sgdb ID | --none | --unpin`: pins what a
+  title is matched to in the match cache (`"how": "pinned"`), the one cache
+  entry `art --force` and `--retry-missing` never overwrite, and prints the
+  equivalent `[overrides]` line to paste into `config.toml` (which still
+  wins over a pin). A title that already has a shortcut loses its grid
+  files and icon so the next `sync` fetches the new match's art (one Steam
+  restart, like `remove`); `--defer-art` instead only marks the cached
+  entry `stale_art` (acted on by `sync` in a later change) and leaves Steam
+  alone. `--force-name` accepts a title the host does not publish yet.
+  Under `--json` it emits a `pinned` event.
+- `--ignore-file PATH` on `sync`, `list` and `ignore`: a JSON list of
+  Moonlight names ignored together with `config.toml`'s `ignore` (the
+  union), so the Decky plugin can keep its own ignore list without editing
+  the config. A missing or malformed file is exit 1 before anything is
+  touched.
+- `status --json`: `entry.stale_art` now reflects the match cache.
 
 ### Fixed
 
