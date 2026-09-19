@@ -47,9 +47,15 @@ class Reporter:
         """A human progress line: ``out`` normally, ``err`` under ``--json``."""
         print(text, file=self.err if self.json else self.out)
 
-    def note(self, message: str) -> None:
-        """A ``note:`` diagnostic -- always on ``err``, plus a ``note`` event
-        under ``--json``. These were already ``err``-only before this PR."""
+    def note(self, message: str, *, only_json: bool = False) -> None:
+        """A ``note:`` diagnostic -- on ``err``, plus a ``note`` event under
+        ``--json``. These were already ``err``-only before this PR, *except*
+        a note whose message is new in this PR (nothing in v0.2.0 could ever
+        print it): pass ``only_json=True`` for one of those, so it appears
+        only under ``--json`` and the human/non-json byte-identity invariant
+        (spec 3.11) holds."""
+        if only_json and not self.json:
+            return
         print(f"note: {message}", file=self.err)
         self.event("note", message=message)
 

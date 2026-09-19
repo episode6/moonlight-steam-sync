@@ -315,6 +315,7 @@ and so on).
 | `ignore` | `start`, `end`, (`error`) |
 | `remove` | `start`, `commit`, `summary`, (`error`) |
 | `launch` | `start`, `exec`, (`error`) |
+| `doctor` | `start`, `end`, (`error`) |
 
 `title`/`app`/`entry` all carry a `match` object shaped
 `{steam_appid, sgdb_id, matched_name, how}` (or `null`), and a `slots`

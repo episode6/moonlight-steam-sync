@@ -49,6 +49,7 @@ from moonlight_steam_sync import version as _pkg_version
 from moonlight_steam_sync.art import resolve as art_resolve
 from moonlight_steam_sync.art.apply import (
     ArtTarget,
+    CommitResult,
     RunSummary,
     SteamShortcutProvider,
     patch_icon,
@@ -172,7 +173,12 @@ def _list_host_or_report(
     ) as exc:
         reporter.error(f"{command}: {exc}", EXIT_MOONLIGHT_UNREACHABLE)
         return None
-    hosts.write_host_cache(deps.resolved_hosts_dir(), config.host, [a.name for a in apps])
+    try:
+        hosts.write_host_cache(deps.resolved_hosts_dir(), config.host, [a.name for a in apps])
+    except OSError as exc:
+        # Best-effort (spec 3.11/3.12): an unwritable cache dir must not turn
+        # an otherwise-successful list into a failed command.
+        reporter.note(f"could not write host list cache: {exc}")
     return apps
 
 
@@ -497,8 +503,14 @@ def steam_aware_provider(
 ) -> SteamShortcutProvider:
     """The ``art`` command's provider: commits through :func:`commit_shortcuts`."""
 
-    def write(shortcuts_file: ShortcutsFile) -> bool:
-        return commit_shortcuts(shortcuts_file, config=config, runner=runner).restarted
+    def write(shortcuts_file: ShortcutsFile) -> CommitResult:
+        commit = commit_shortcuts(shortcuts_file, config=config, runner=runner)
+        return CommitResult(
+            written=commit.written,
+            restarted=commit.restarted,
+            backup=commit.backup,
+            relaunch_error=commit.relaunch_error,
+        )
 
     return SteamShortcutProvider(config, writer=write)
 
@@ -593,6 +605,25 @@ def _title_event_fields(index: int, total: int, result: Any) -> dict[str, Any]:
         "appid": result.target.appid,
         "match": match_json(result.match),
         "slots": {key: slot_json_value(outcome.source) for key, outcome in result.slots.items()},
+    }
+
+
+def _remove_summary_event_fields(removed: int, exit_code: int) -> dict[str, Any]:
+    """``remove``'s ``summary`` (spec 3.4.6): same key set as ``sync``'s,
+    with only ``removed`` ever non-zero -- ``remove`` has no art phase or
+    plan of its own."""
+    return {
+        "added": 0,
+        "replaced": 0,
+        "removed": removed,
+        "filled": 0,
+        "missing": 0,
+        "unmatched": [],
+        "duplicates": {},
+        "pending": 0,
+        "stopped_early": False,
+        "stop_reason": None,
+        "exit": exit_code,
     }
 
 
@@ -904,7 +935,6 @@ def _same_game_as(
                 same = True
             if same:
                 results.append({"name": other_name, "host": host_name})
-                break
     return results
 
 
@@ -1114,17 +1144,20 @@ def cmd_remove(
         wanted = list(getattr(args, "names", []) or [])
         unknown = [name for name in wanted if name not in by_name]
         if unknown:
-            print(
-                "remove: no owned shortcut named " + ", ".join(repr(n) for n in unknown),
-                file=err,
+            unknown_message = "remove: no owned shortcut named " + ", ".join(
+                repr(n) for n in unknown
             )
-            reporter.error("remove: nothing was touched", EXIT_USAGE_OR_CONFIG)
+            print(unknown_message, file=err)
+            print("remove: nothing was touched", file=err)
+            # error.message is the informative line, not the generic one
+            # printed alongside it (both stay on stderr either way).
+            reporter.event("error", exit=EXIT_USAGE_OR_CONFIG, message=unknown_message)
             return EXIT_USAGE_OR_CONFIG
         victims = [by_name[name] for name in dict.fromkeys(wanted)]
 
     if not victims:
         reporter.line("nothing to remove")
-        reporter.event("summary", added=0, replaced=0, removed=0, exit=EXIT_OK)
+        reporter.event("summary", **_remove_summary_event_fields(0, EXIT_OK))
         return EXIT_OK
 
     for entry in victims:
@@ -1145,7 +1178,7 @@ def cmd_remove(
     reporter.line(commit.describe(library.user.shortcuts_path))
     reporter.event("commit", **_commit_event_fields(commit))
     reporter.line(f"removed {len(victims)} shortcut(s) and {deleted} grid file(s)")
-    reporter.event("summary", added=0, replaced=0, removed=len(victims), exit=EXIT_OK)
+    reporter.event("summary", **_remove_summary_event_fields(len(victims), EXIT_OK))
     return EXIT_OK
 
 

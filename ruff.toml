@@ -14,5 +14,10 @@ known-first-party = ["moonlight_steam_sync"]
 # module to reuse their setup are then used as same-named test-function
 # parameters, which pyflakes reads as a redefinition -- the pattern spec 4's
 # preamble asks new test files to use rather than editing the frozen
-# tests/test_sync_e2e.py.
+# tests/test_sync_e2e.py. A per-line `# noqa: F811` on the import cannot
+# replace this: ruff anchors F811 at each *use* site (every test function
+# whose parameter shadows the fixture name), not at the import, so avoiding
+# the blanket ignore would mean a `# noqa: F811` on every such test
+# function's signature across every new test file -- worse than the ignore
+# it would replace.
 "tests/*.py" = ["F811"]

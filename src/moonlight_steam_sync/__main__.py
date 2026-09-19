@@ -21,6 +21,7 @@ import platform
 import sys
 from importlib import metadata
 from pathlib import Path
+from typing import TextIO
 
 from moonlight_steam_sync import __version__, hosts, moonlight, steam, sync
 from moonlight_steam_sync.art.cli import ProviderFactory, cmd_art, cmd_search, cmd_status
@@ -32,6 +33,7 @@ from moonlight_steam_sync.config import (
     owned_apps_steamid3,
     toml_host,
 )
+from moonlight_steam_sync.reporting import Reporter
 
 # Exit codes (spec 3.3).
 EXIT_OK = 0
@@ -233,7 +235,9 @@ def _session_line() -> str:
     )
 
 
-def cmd_doctor(args: argparse.Namespace) -> int:
+def cmd_doctor(
+    args: argparse.Namespace, *, out: TextIO | None = None, err: TextIO | None = None
+) -> int:
     """Print the environment report spec 3.3 promises: steam dir, user,
     python, moonlight path, key present?, steam running?
 
@@ -241,7 +245,17 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     ``active host:``, ``cached hosts:``) and an ``owned-apps file:`` line
     when ``--owned-apps`` is given; ``doctor`` never exits 1 over a bad
     file, since it is a diagnostic.
+
+    Under ``--json`` (spec 3.4.6): the report moves to stderr (one line at a
+    time -- the same bytes as the single joined ``print`` below, just split
+    across calls) and stdout carries ``start`` then
+    ``{"event":"end","count":N}``.
     """
+    out = out or sys.stdout
+    err = err or sys.stderr
+    json_mode = bool(getattr(args, "json", False))
+    reporter = Reporter(out, err, json=json_mode, command="doctor", version=_version())
+    reporter.start()
     cfg = load_config(args)
 
     lines = [
@@ -284,33 +298,45 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                 f"owned-apps file: {owned_path} ({len(apps)} apps, steamid3 {steamid3})"
             )
 
-    print("\n".join(lines))
+    for line in lines:
+        reporter.line(line)
+    reporter.event("end", count=len(lines))
     return EXIT_OK
 
 
-def cmd_launch(args: argparse.Namespace) -> int:
+def cmd_launch(
+    args: argparse.Namespace, *, out: TextIO | None = None, err: TextIO | None = None
+) -> int:
     """`exec` into `moonlight stream <host> "<name>"` (spec 3.3).
 
     Never returns on success: :func:`moonlight.stream` replaces this
-    process via ``os.execvp``.
+    process via ``os.execvp``. Under ``--json`` (spec 3.4.6): ``start`` then
+    ``exec`` (its only other possible line is ``error``).
     """
+    out = out or sys.stdout
+    err = err or sys.stderr
+    json_mode = bool(getattr(args, "json", False))
+    reporter = Reporter(out, err, json=json_mode, command="launch", version=_version())
+    reporter.start()
+
     cfg = load_config(args)
     if not cfg.host:
-        print(
+        reporter.error(
             "launch: no host configured; set `host` in ~/.config/moonlight-steam-sync/config.toml",
-            file=sys.stderr,
+            EXIT_USAGE_OR_CONFIG,
         )
         return EXIT_USAGE_OR_CONFIG
 
+    reporter.event("exec", host=cfg.host, name=args.name)
     try:
         moonlight.stream(cfg.host, args.name, args.extra)
     except moonlight.MoonlightNotFoundError as exc:
-        print(f"launch: {exc}", file=sys.stderr)
+        reporter.error(f"launch: {exc}", EXIT_MOONLIGHT_UNREACHABLE)
         return EXIT_MOONLIGHT_UNREACHABLE
     except OSError as exc:
         # os.execvp failed to replace the process (e.g. the resolved binary
         # vanished between find_binary() and exec).
-        print(f"launch: failed to run moonlight: {exc}", file=sys.stderr)
+        reporter.error(f"launch: failed to run moonlight: {exc}", EXIT_MOONLIGHT_UNREACHABLE)
         return EXIT_MOONLIGHT_UNREACHABLE
     return EXIT_OK  # pragma: no cover -- unreachable when execvp succeeds
 
@@ -371,7 +397,17 @@ def main(
         if args.command == "remove":
             return sync.cmd_remove(args, load_config(args), deps=deps)
     except KeyboardInterrupt:
+        # Every subcommand function emits its own `start` as its first line,
+        # so by the time a bare KeyboardInterrupt reaches here that has
+        # already happened; this only needs to add the `error` that must
+        # always be last (spec 3.4.6). Whatever subcommand this was hit
+        # before it had a `plan` to report (sync's own internal handler
+        # covers everything after that), so no `summary` is owed here.
         print(f"\n{sync.RESUME_HINT}", file=sys.stderr)
+        if bool(getattr(args, "json", False)):
+            Reporter(
+                sys.stdout, sys.stderr, json=True, command=str(args.command), version=_version()
+            ).event("error", exit=EXIT_SIGINT, message=sync.RESUME_HINT)
         return EXIT_SIGINT
     parser.error(f"unknown command {args.command!r}")  # pragma: no cover
     return EXIT_USAGE_OR_CONFIG  # pragma: no cover

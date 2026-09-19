@@ -205,26 +205,35 @@ def cmd_art(
         )
     except KeyboardInterrupt:
         services.cache.flush()
-        reporter.event(
-            "summary", added=0, replaced=0, removed=0, exit=EXIT_SIGINT
-        )
+        interrupted = RunSummary(stopped_early=True, stop_reason="interrupted")
+        # summary is always the line before error (spec 3.4.6): emit it
+        # first even though there is no real RunSummary to report from.
+        reporter.event("summary", **_art_summary_event_fields(interrupted, EXIT_SIGINT))
         reporter.error("interrupted; resume with the same command", EXIT_SIGINT)
         return EXIT_SIGINT
 
     for line in summary.lines():
         reporter.line(line)
+    interrupted_message: str | None = None
     if summary.stop_reason == "interrupted":
         # run_art catches the Ctrl-C around each title, so this -- not the
         # handler above -- is the branch a real SIGINT takes (spec 3.9.5).
-        reporter.error("interrupted; resume with the same command", EXIT_SIGINT)
+        # The JSON `error` event is deferred past `summary` below (spec
+        # 3.4.6: error is always last); the human text prints here, same as
+        # always, since it is not part of summary.lines().
+        interrupted_message = "interrupted; resume with the same command"
+        print(interrupted_message, file=err)
     if summary.stopped_early:
         # The grid files written so far are durable; the icon patches are
         # re-derived from them on the next run, so nothing is lost by not
         # writing shortcuts.vdf now (spec 3.9 item 4: the write comes last).
         exit_code = _exit_code(summary)
-        reporter.event("summary", added=0, replaced=0, removed=0, exit=exit_code)
-        if summary.stop_reason != "interrupted":
-            reporter.event("error", exit=exit_code, message=summary.stop_reason)
+        reporter.event("summary", **_art_summary_event_fields(summary, exit_code))
+        reporter.event(
+            "error",
+            exit=exit_code,
+            message=interrupted_message if interrupted_message is not None else summary.stop_reason,
+        )
         return exit_code
 
     # One atomic shortcuts.vdf write for the icon patches (spec 3.6). The
@@ -233,11 +242,11 @@ def cmd_art(
     try:
         provider.commit()
     except steam.SteamRunningError as exc:
-        reporter.event("summary", added=0, replaced=0, removed=0, exit=EXIT_STEAM_RUNNING)
+        reporter.event("summary", **_art_summary_event_fields(summary, EXIT_STEAM_RUNNING))
         reporter.error(f"art: {exc}", EXIT_STEAM_RUNNING)
         return EXIT_STEAM_RUNNING
     except KeyboardInterrupt:
-        reporter.event("summary", added=0, replaced=0, removed=0, exit=EXIT_SIGINT)
+        reporter.event("summary", **_art_summary_event_fields(summary, EXIT_SIGINT))
         reporter.error(
             "interrupted while writing shortcuts.vdf; rerun the same command", EXIT_SIGINT
         )
@@ -246,14 +255,50 @@ def cmd_art(
         print("restart Steam to see the new artwork", file=err)
         reporter.event("note", message="restart Steam to see the new artwork")
     exit_code = _exit_code(summary)
-    reporter.event("commit", written=bool(summary.written), restarted=_restarted(provider))
-    reporter.event("summary", added=0, replaced=0, removed=0, exit=exit_code)
+    reporter.event("commit", **_commit_event_fields(provider))
+    reporter.event("summary", **_art_summary_event_fields(summary, exit_code))
     return exit_code
 
 
 def _restarted(provider: TargetProvider) -> bool:
     """Whether the provider's commit already bounced Steam (the sync writer says)."""
     return bool(getattr(provider, "restarted_steam", False))
+
+
+def _commit_event_fields(provider: TargetProvider) -> dict[str, Any]:
+    """``art``'s ``commit`` event (spec 3.4.6): same key set as ``sync``'s
+    -- ``written``/``restarted``/``backup``/``relaunch_error`` -- read off
+    the provider's :class:`~moonlight_steam_sync.art.apply.CommitResult`
+    when it has one (the real, Steam-aware provider always does)."""
+    last_commit = getattr(provider, "last_commit", None)
+    if last_commit is None:
+        return {"written": False, "restarted": False, "backup": None, "relaunch_error": ""}
+    backup = getattr(last_commit, "backup", None)
+    return {
+        "written": bool(getattr(last_commit, "written", False)),
+        "restarted": bool(getattr(last_commit, "restarted", False)),
+        "backup": backup.name if backup is not None else None,
+        "relaunch_error": getattr(last_commit, "relaunch_error", "") or "",
+    }
+
+
+def _art_summary_event_fields(summary: RunSummary, exit_code: int) -> dict[str, Any]:
+    """``art``'s ``summary`` event (spec 3.4.6): the same key set ``sync``
+    uses, with ``added``/``replaced``/``removed`` always 0 -- ``art`` never
+    adds, replaces or removes a shortcut."""
+    return {
+        "added": 0,
+        "replaced": 0,
+        "removed": 0,
+        "filled": summary.filled,
+        "missing": summary.missing,
+        "unmatched": summary.unmatched,
+        "duplicates": {},
+        "pending": 0,
+        "stopped_early": summary.stopped_early,
+        "stop_reason": summary.stop_reason or None,
+        "exit": exit_code,
+    }
 
 
 def _exit_code(summary: RunSummary) -> int:
@@ -329,9 +374,12 @@ def cmd_status(
     match_cache = MatchCache(cache_path or default_cache_path())
     host_cache = hosts.read_host_cache(resolved_hosts_dir, config.host) if config.host else None
     if host_cache is None:
+        # New in this PR (the host cache did not exist in v0.2.0): only_json
+        # keeps plain `status` byte-identical to v0.2.0 (spec 3.11).
         reporter.note(
             f"no cached app list for host {config.host or '(none)'}; `published` is unknown; "
-            f"run `list --host {config.host or 'NAME'}`"
+            f"run `list --host {config.host or 'NAME'}`",
+            only_json=True,
         )
     published_names = set(host_cache.apps) if host_cache is not None else set()
 
