@@ -60,6 +60,20 @@ def loginusers_text() -> str:
     return data.decode("utf-8")
 
 
+@pytest.fixture(autouse=True)
+def _isolated_xdg_state_home(tmp_path, monkeypatch):
+    """Point ``$XDG_STATE_HOME`` at a per-test tmp dir (spec 3.4.8).
+
+    Without this, a developer's real ``~/.local/state/moonlight-steam-sync/
+    active-host`` could leak into a test that calls
+    :func:`moonlight_steam_sync.config.load_config` without an explicit
+    ``state_file=`` override -- notably
+    ``test_launch_execs_moonlight_stream_with_configured_host``, which must
+    keep asserting on the *configured* host.
+    """
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg-state"))
+
+
 @pytest.fixture
 def large_library_list() -> str:
     """``moonlight list <host>`` from a 500-title host, for the resumability test.
