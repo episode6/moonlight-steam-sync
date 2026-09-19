@@ -123,7 +123,8 @@ independent PRs can land in parallel.
   `SteamRunningError` (exit 2) when `restart_steam` is false, and otherwise
   does `steam -shutdown` -> wait -> write -> `steam -silent` with `SIGINT`
   deferred across the window. `art` commits through it too
-  (`sync.steam_aware_provider`), and the fallback writer in `art/apply.py`
+  (`sync.steam_aware_provider`), so does `match`'s grid-and-icon reset
+  (`art/cli.cmd_match`), and the fallback writer in `art/apply.py`
   refuses rather than writes when Steam is running. Do not add a second
   writer.
 - **Owned = exe match, not name match.** `ShortcutsFile.owned(config.exe)`
