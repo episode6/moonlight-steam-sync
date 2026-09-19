@@ -130,7 +130,7 @@ job with no network calls.
 | `<steam>/userdata/<steamid3>/config/shortcuts.vdf` | the non-Steam shortcut store; rewritten once per run |
 | `<steam>/userdata/<steamid3>/config/shortcuts.vdf.bak-<timestamp>` | a backup per write, newest five kept |
 | `<steam>/userdata/<steamid3>/config/grid/` | artwork: `<appid>p`, `<appid>`, `<appid>_hero`, `<appid>_logo`, `<appid>_icon` |
-| `~/.cache/moonlight-steam-sync/matches.json` | the title -> Steam/SteamGridDB match cache (`XDG_CACHE_HOME` honoured) |
+| `~/.cache/moonlight-steam-sync/matches.json` | the title -> Steam/SteamGridDB match cache, including titles pinned with `match` (`XDG_CACHE_HOME` honoured) |
 
 `<steam>` is found automatically (`~/.local/share/Steam`, then `~/.steam/steam`
 and `~/.steam/root`, which are symlinks to it on SteamOS); set `STEAM_ROOT` to
@@ -149,16 +149,17 @@ landscape art that shares its name.
 ## Usage
 
 ```
-moonlight-steam-sync [--json] sync      [--host H] [--dry-run] [--no-art] [--limit N] [--retry-missing] [--no-restart-steam]
+moonlight-steam-sync [--json] sync      [--host H] [--dry-run] [--no-art] [--limit N] [--retry-missing] [--no-restart-steam] [--ignore-file PATH]
 moonlight-steam-sync [--json] art       [--force] [--retry-missing] [--only "Name"] [--explain]
-moonlight-steam-sync [--json] list      [--host H] [--cached]
+moonlight-steam-sync [--json] list      [--host H] [--cached] [--ignore-file PATH]
 moonlight-steam-sync [--json] status    [--host H] [--owned-apps PATH]
 moonlight-steam-sync [--json] search    "term" [--owned-apps PATH]
+moonlight-steam-sync [--json] match     "Name" (--steam APPID | --sgdb ID | --none | --unpin) [--defer-art] [--force-name]
 moonlight-steam-sync [--json] host      show [--host H] | set NAME | clear
-moonlight-steam-sync [--json] ignore    --all | "Name"...
+moonlight-steam-sync [--json] ignore    --all | "Name"... [--ignore-file PATH]
 moonlight-steam-sync [--json] remove    --all | "Name"...
 moonlight-steam-sync [--json] launch    [--host H] "Name" [-- extra moonlight flags]
-moonlight-steam-sync [--json] doctor    [--host H] [--owned-apps PATH]
+moonlight-steam-sync [--json] doctor    [--host H] [--owned-apps PATH] [--ignore-file PATH]
 ```
 
 `--json`, before the subcommand, switches every command to the
@@ -209,6 +210,13 @@ After `4` or `130`, rerun the same command to continue.
   under everything on the PC today". `ignore "Name"...` prints the block
   with those names added. Either way you paste it into `config.toml`
   yourself; the tool never edits the config.
+- `--ignore-file PATH` (on `sync`, `list`, `ignore` and `doctor`) adds a
+  second ignore list kept outside `config.toml`: a JSON list of Moonlight
+  names, `["Desktop", "Steam Big Picture"]`, ignored together with
+  `ignore` (the union). It is how the Decky plugin keeps its own ignores
+  without touching the config; `ignore --all` does not offer those names
+  again and still prints only `config.toml`'s list plus the new ones. A
+  missing or malformed file is exit `1` before anything is touched.
 - `remove "Name"...` (or `--all`) deletes the named owned shortcuts and their
   five grid files, with the same one-restart write as `sync`. Shortcuts that
   do not point at the configured `exe` are never touched. An unknown name is
@@ -223,8 +231,8 @@ After `4` or `130`, rerun the same command to continue.
 - `search "term"` looks a title up the same way `sync`'s art phase does --
   SteamGridDB (when a key is configured) then Steam's own store -- and
   prints the candidates without writing anything, for fixing a wrong match
-  by hand or from the plugin's Titles page (`match`, arriving in a later
-  release, applies the pick).
+  by hand or from the plugin's Titles page; `match` (below) applies the
+  pick.
 
 ### Multiple hosts
 
@@ -269,9 +277,40 @@ Rules worth knowing:
   not search for them again; `--retry-missing` asks anyway.
 - `art --explain` prints the whole match chain for each title: what was
   searched, what matched, and which URL each slot came from.
-- Pin a title that matches badly with `[overrides]` in the config, or turn
-  art off for it entirely with `{ art = false }`.
+- Pin a title that matches badly with `match` (below) or `[overrides]` in
+  the config, or turn art off for it entirely with `{ art = false }`.
 - No WebP and no animated art: Steam cannot read either out of `grid/`.
+
+#### Fixing a wrong match
+
+A fuzzy search is right often enough for artwork but not always ("Hades
+II" once matched "Hades"). `search` shows the candidates and `match` pins
+the right one:
+
+```sh
+moonlight-steam-sync search "Hades II"                  # candidates, SteamGridDB then Steam
+moonlight-steam-sync match "Hades II" --steam 1145350   # pin a Steam appid
+moonlight-steam-sync match "Fan Game" --sgdb 5247018    # or a SteamGridDB game id
+moonlight-steam-sync match "Launcher Tool" --none       # or "no match": no lookups, no art
+moonlight-steam-sync match "Hades II" --unpin           # forget it; the next run searches again
+```
+
+A pin lives in the match cache (`matches.json`, `"how": "pinned"`) and is
+the one entry there that `art --force` and `--retry-missing` never
+overwrite. `match` prints the equivalent `[overrides]` line (`"Hades II" =
+{ steam = 1145350 }`, or `"Launcher Tool" = {}` for `--none`); paste it into
+`config.toml` to make the pin permanent -- an `[overrides]` entry always
+wins over a pin, and the tool never writes the config itself.
+
+When the title already has a shortcut, its artwork belongs to the old
+match, so `match` deletes its five grid files and clears its icon, with the
+same one-restart write as `remove` (exit `2`, with nothing changed at all,
+when Steam is running and `restart_steam = false`); the next `sync` fetches
+the new match's art. `--defer-art` leaves the files and Steam alone and
+only marks the title's art as stale in the cache, for a later `sync` to
+replace. The name must be one the host publishes (as of its last `list` or
+`sync`) or one that already has a shortcut; `--force-name` pins a title the
+host will publish later.
 
 A large Moonlight library (500+ titles) means a first `sync` can be a couple
 thousand HTTP calls; at the default pacing that is on the order of 10-20
@@ -311,6 +350,7 @@ and so on).
 | `list` | `start`, `app`\*, `end`, (`error`) |
 | `status` | `start`, `entry`\*, `end`, (`error`) |
 | `search` | `start`, `candidate`\*, `end`, (`error`) |
+| `match` | `start`, `pinned`, (`note`), (`error`) |
 | `host` | `start`, `host`, (`error`) |
 | `ignore` | `start`, `end`, (`error`) |
 | `remove` | `start`, `commit`, `summary`, (`error`) |
