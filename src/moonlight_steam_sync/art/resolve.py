@@ -17,6 +17,15 @@ spec 3.4.4) is the tool's own record of "the user chose this match". It is
 the one cache entry ``art --force`` and ``--retry-missing`` never overwrite;
 only ``match --unpin`` (or a later ``match``) removes it.
 
+``stale_art`` is a fact about the grid files on disk ("they belong to an
+earlier match"), not about the match, so it outlives the entry it was set
+on: :meth:`MatchCache.put` carries it forward onto whatever resolution
+replaces the entry, and only :meth:`MatchCache.pin` (the user's fresh
+choice) or :meth:`MatchCache.clear_stale_art` (the art was re-fetched)
+drops it. ``match --unpin --defer-art`` therefore leaves a placeholder
+(``how == "unpinned"``, no ids) that carries the flag; the resolver treats
+it as a cache miss, so the next run still re-resolves.
+
 Matching order (spec 3.5 step A): config override, then a pin, then the
 cache, then SteamGridDB autocomplete, then -- if there is no key, or
 SteamGridDB returned nothing -- Steam's own store search. Both searches use
@@ -45,6 +54,12 @@ CACHE_VERSION = 1
 
 #: ``Match.how`` of an entry written by ``match`` (decky spec 3.4.4).
 HOW_PINNED = "pinned"
+
+#: ``Match.how`` of the placeholder ``match --unpin --defer-art`` leaves
+#: behind to carry ``stale_art`` until the next run re-resolves the title
+#: (decky spec 3.4.4). Never authoritative: the resolver treats it as a
+#: cache miss and the ``--json`` reports show it as no match at all.
+HOW_UNPINNED = "unpinned"
 
 _TRADEMARKS = str.maketrans({"™": "", "®": "", "©": ""})
 _TRAILING_YEAR = re.compile(r"\(\s*(?:19|20)\d{2}\s*\)\s*$")
@@ -98,10 +113,11 @@ class Match:
     """What we know about one Moonlight title.
 
     ``how`` is the match chain's verdict, printed by ``art --explain``:
-    ``override``, ``pinned`` (``match``, decky spec 3.4.4), ``cache``,
-    ``sgdb:exact-verified``, ``sgdb:exact``, ``sgdb:fuzzy``,
-    ``steamstore:exact``, ``steamstore:fuzzy``, ``none`` or ``skipped``
-    (``art = false`` in ``[overrides]``).
+    ``override``, ``pinned`` (``match``, decky spec 3.4.4), ``unpinned``
+    (the placeholder ``match --unpin --defer-art`` leaves; not a
+    resolution), ``cache``, ``sgdb:exact-verified``, ``sgdb:exact``,
+    ``sgdb:fuzzy``, ``steamstore:exact``, ``steamstore:fuzzy``, ``none`` or
+    ``skipped`` (``art = false`` in ``[overrides]``).
     """
 
     name: str
@@ -136,6 +152,11 @@ class Match:
     @property
     def pinned(self) -> bool:
         return self.how == HOW_PINNED
+
+    @property
+    def unpinned(self) -> bool:
+        """The ``--unpin --defer-art`` placeholder: a stale-art marker, not a match."""
+        return self.how == HOW_UNPINNED
 
     def to_json(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -219,8 +240,20 @@ class MatchCache:
     def get(self, name: str) -> Match | None:
         return self._entries.get(name)
 
-    def put(self, match: Match) -> None:
-        """Record a resolution and write the file straight away."""
+    def put(self, match: Match, *, keep_stale_art: bool = True) -> None:
+        """Record a resolution and write the file straight away.
+
+        ``stale_art`` belongs to the grid files, not to the match, so by
+        default it is carried forward from the entry being replaced: a
+        deferred ``match`` (or ``--unpin``) followed by a re-resolution
+        still leaves a flagged entry for ``sync`` to act on. Only
+        :meth:`pin` -- the user's own fresh choice -- passes
+        ``keep_stale_art=False``; :meth:`clear_stale_art` is the other way
+        the flag goes.
+        """
+        previous = self._entries.get(match.name)
+        if keep_stale_art and previous is not None and previous.stale_art:
+            match.stale_art = True
         self._entries[match.name] = match
         self._dirty = True
         self.flush()
@@ -254,19 +287,30 @@ class MatchCache:
             matched_name=match.matched_name,
             how=HOW_PINNED,
         )
-        self.put(pinned)
+        self.put(pinned, keep_stale_art=False)
         return pinned
 
-    def unpin(self, name: str) -> bool:
-        """Delete the title's entry so the next run re-resolves it.
+    def unpin(self, name: str, *, stale_art: bool = False) -> bool:
+        """Forget the title's match so the next run re-resolves it.
 
-        Returns whether there was an entry to delete; a no-op otherwise.
+        Deletes the entry outright, or -- with ``stale_art`` (``match
+        --unpin --defer-art`` on a title that has a shortcut, so the grid
+        files on disk belong to the match being forgotten) -- replaces it
+        with a ``how == "unpinned"`` placeholder whose only content is the
+        flag. :meth:`Resolver.resolve` treats that placeholder as a miss,
+        and :meth:`put` carries the flag onto the resolution that replaces
+        it, so ``sync`` still sees ``stale_art`` after re-resolving.
+
+        Returns whether the title had an entry before the call.
         """
-        if self._entries.pop(name, None) is None:
+        had_entry = self._entries.pop(name, None) is not None
+        if stale_art:
+            self._entries[name] = Match(name=name, how=HOW_UNPINNED, stale_art=True)
+        elif not had_entry:
             return False
         self._dirty = True
         self.flush()
-        return True
+        return had_entry
 
     def mark_stale_art(self, name: str) -> bool:
         """Flag the title's grid files as belonging to an earlier match.
@@ -377,7 +421,10 @@ class Resolver:
         Order: a ``[overrides]`` entry in ``config.toml`` (config beats
         cache, so it also beats a pin), then a pinned cache entry --
         checked *before* ``force`` and ``retry_missing``, so neither ever
-        overwrites a pin -- then the ordinary cache, then the searches.
+        overwrites a pin -- then the ordinary cache, then the searches. An
+        ``unpinned`` placeholder (``match --unpin --defer-art``) is a cache
+        miss: it only exists to carry ``stale_art`` onto the resolution
+        that :meth:`MatchCache.put` writes over it.
         """
         explain: list[str] = []
 
@@ -413,7 +460,7 @@ class Resolver:
                 f"pinned: steam={cached.steam_appid} sgdb={cached.sgdb_id} when={cached.when}"
             ]
             return cached
-        if self.force:
+        if self.force or (cached is not None and cached.unpinned):
             cached = None
         if cached is not None and (cached.found or self._negative_still_valid(cached)):
             cached.explain = [f"cache: how={cached.how} when={cached.when}"]

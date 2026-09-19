@@ -668,7 +668,10 @@ def cmd_match(
       like ``remove`` -- so under a live Steam without ``restart_steam``
       it exits 2 and touches nothing, not even the pin;
     * with ``--defer-art`` only the cache is written and the entry records
-      ``stale_art: true``, for the next ``sync`` to act on.
+      ``stale_art: true``, for the next ``sync`` to act on. ``--unpin
+      --defer-art`` has no entry left to flag, so it leaves an ``unpinned``
+      placeholder that carries the flag (the resolver treats it as a miss
+      and carries the flag onto whatever the next run resolves).
 
     A name that is neither owned nor in the resolved host's cached app list
     (the per-host list cache ``sync``/``list`` write; ``match`` never runs
@@ -778,10 +781,13 @@ def cmd_match(
             reporter.error(f"match: {exc}", EXIT_STEAM_RUNNING)
             return EXIT_STEAM_RUNNING
 
+    deferred = shortcut is not None and not immediate
     if pin is not None:
         cache.pin(pin)
+        if deferred:
+            cache.mark_stale_art(name)
     else:
-        cache.unpin(name)
+        cache.unpin(name, stale_art=deferred)
 
     deleted = 0
     if immediate:
@@ -812,8 +818,7 @@ def cmd_match(
         assert commit is not None
         reporter.line(commit.describe(library.user.shortcuts_path))
         reporter.line(f"deleted {deleted} grid file(s)")
-    elif shortcut is not None and pin is not None:
-        cache.mark_stale_art(name)
+    elif deferred:
         message = f'art for "{name}" will be re-fetched on the next sync'
         reporter.line(message)
         reporter.event("note", message=message)
