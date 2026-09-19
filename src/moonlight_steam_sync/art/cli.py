@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-import json
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -629,9 +628,14 @@ def override_line(
 
     ``"Hades II" = { steam = 1145350 }`` for ``--steam``, ``{ sgdb = N }``
     for ``--sgdb``, and ``{}`` for ``--none`` -- an empty override table is
-    the config form of "no match".
+    the config form of "no match". The key is quoted by
+    :func:`moonlight_steam_sync.sync.toml_string`, the same quoting ``ignore
+    --all`` prints its TOML with.
     """
-    key = json.dumps(name, ensure_ascii=False)  # a TOML basic string
+    # ``sync`` imports this module, so its helpers are imported at call time.
+    from moonlight_steam_sync.sync import toml_string
+
+    key = toml_string(name)
     if steam_appid is not None:
         return f"{key} = {{ steam = {steam_appid} }}"
     if sgdb_id is not None:
@@ -666,7 +670,12 @@ def cmd_match(
     * by default the title's grid files are deleted and its ``icon`` field
       cleared, through :func:`moonlight_steam_sync.sync.commit_shortcuts`
       like ``remove`` -- so under a live Steam without ``restart_steam``
-      it exits 2 and touches nothing, not even the pin;
+      it exits 2 and touches nothing, not even the pin. Like ``remove``,
+      that refusal needs a ``shortcuts.vdf`` change to refuse: when the
+      ``icon`` field is already empty, ``commit_shortcuts()`` has nothing
+      to write and never consults Steam, so the pin and the grid-file
+      deletion go ahead with Steam up (harmless; ``art --force`` replaces
+      grid files under a running Steam too);
     * with ``--defer-art`` only the cache is written and the entry records
       ``stale_art: true``, for the next ``sync`` to act on. ``--unpin
       --defer-art`` has no entry left to flag, so it leaves an ``unpinned``
