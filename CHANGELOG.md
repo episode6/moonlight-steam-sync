@@ -6,7 +6,25 @@ project uses [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
-Nothing yet.
+Prepared for `v0.3.1`.
+
+### Fixed
+
+- **"moonlight CLI not found" and "5 consecutive network failures" when run
+  by the Decky plugin.** Decky Loader is a PyInstaller-frozen binary and
+  exports `LD_LIBRARY_PATH=/tmp/_MEI...` (its bundled, older OpenSSL) to
+  every child. Under it `flatpak list` died in the dynamic linker
+  (``version `OPENSSL_3.4.0' not found``), which the tool read as "the
+  flatpak is not installed", and the tool's own `import ssl` failed the same
+  way, so `search`, `sync` and `art` stopped after five network failures.
+  The tool now detects a frozen parent (`LD_LIBRARY_PATH_ORIG`, or a `_MEI*`
+  entry on `LD_LIBRARY_PATH`), restores the original library path and
+  re-executes itself once, same pid and argv (new module `procenv.py`). With
+  neither trace in the environment nothing changes.
+- A `flatpak list` that fails or times out is no longer reported as a bare
+  `not found`: `doctor`'s `moonlight:` line and the not-found error carry
+  the exit code and the first line of flatpak's stderr. A flatpak that runs
+  and simply does not list the app keeps the old wording byte for byte.
 
 ## [0.3.0] - 2026-09-20
 

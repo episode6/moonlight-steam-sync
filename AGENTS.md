@@ -83,6 +83,8 @@ moonlight_steam_sync/
                    grid paths, is_running(), shutdown()/relaunch()
   moonlight.py     find binary (native `moonlight`, else flatpak), list(host) -> [App(name)],
                    stream(host, name, extra), run_client(extra)
+  procenv.py       undo a PyInstaller parent's LD_LIBRARY_PATH (Decky's plugin_loader): repaired_env(),
+                   reexec_if_needed() -- main()'s first call on a real invocation (argv is None)
   hosts.py         active-host state file (read/write/clear_active_host); per-host `moonlight list`
                    cache (slug, HostCache, list_cached_hosts); `host show|set|clear` (cmd_host)
   reporting.py     Reporter: the `--json` event stream shared by sync.py and art/cli.py; the title

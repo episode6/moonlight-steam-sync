@@ -122,6 +122,15 @@ com.moonlight_stream.Moonlight`), then a native `moonlight` on `PATH`, then
 the [Flathub flatpak](https://flathub.org/apps/com.moonlight_stream.Moonlight)
 if it is installed.
 
+The tool is meant to work from a service, a cron job or a plugin, not only a
+login shell. One environment needs active repair: a PyInstaller-frozen parent
+(Decky Loader is one) exports an `LD_LIBRARY_PATH` pointing at its own bundled
+libraries, under which `flatpak` and Python's `ssl` both fail to load. The
+tool detects that (`LD_LIBRARY_PATH_ORIG`, or a `_MEI*` directory on
+`LD_LIBRARY_PATH`), restores the original value and re-executes itself once.
+When `flatpak list` fails for any other reason, `doctor`'s `moonlight:` line
+and the "not found" error say why instead of a bare `not found`.
+
 **Steam must restart** to notice new shortcuts and new artwork files. `sync`
 does this once per run (`steam -shutdown`, wait for it to exit, write,
 `steam -silent`) rather than per game, and only when something actually
