@@ -123,6 +123,22 @@ write, it exits 2 without writing -- the artwork already on disk stays and is
 picked up on the next restart, so quitting Steam and rerunning finishes the
 job with no network calls.
 
+Those are two of the three **commit modes**, and `--commit MODE` (on `sync`,
+`art`, `remove` and `match`) picks one explicitly: `restart` (the above,
+even when the config says `restart_steam = false`), `refuse` (the same
+thing as `--no-restart-steam`), or `await-exit`, which is for the Decky
+plugin running from Game Mode, where the tool must never start Steam
+itself (gamescope restarts the client on its own): when there is something
+to write and Steam is running, the tool says so (`awaiting-steam-exit`
+under `--json`), polls every 100 ms for up to 60 s for Steam to *exit* --
+the plugin asks it to -- writes the moment it is gone, and returns without
+starting it. If Steam is still up after 60 s it exits 2 with the file
+untouched (`steam did not exit; shortcuts.vdf not written`); nothing is
+lost, the next run only writes. `Ctrl-C` during that wait exits 130 at
+once, also with the file untouched, since nothing has been done to Steam
+yet. An art-only run (new grid files, nothing to write) does not wait at
+all and leaves the restart to the caller.
+
 ## What it touches on disk
 
 | path | why |
@@ -149,16 +165,18 @@ landscape art that shares its name.
 ## Usage
 
 ```
-moonlight-steam-sync [--json] sync      [--host H] [--dry-run] [--no-art] [--limit N] [--retry-missing] [--no-restart-steam]
-                                        [--ignore-file PATH] [--owned-apps PATH] [--client-shortcut] [--park-unpublished]
-moonlight-steam-sync [--json] art       [--force] [--retry-missing] [--only "Name"] [--explain]
+moonlight-steam-sync [--json] sync      [--host H] [--dry-run] [--no-art] [--limit N] [--retry-missing]
+                                        [--commit MODE | --no-restart-steam] [--ignore-file PATH] [--owned-apps PATH]
+                                        [--client-shortcut] [--park-unpublished]
+moonlight-steam-sync [--json] art       [--force] [--retry-missing] [--only "Name"] [--explain] [--commit MODE]
 moonlight-steam-sync [--json] list      [--host H] [--cached] [--ignore-file PATH] [--owned-apps PATH]
 moonlight-steam-sync [--json] status    [--host H] [--owned-apps PATH]
 moonlight-steam-sync [--json] search    "term" [--owned-apps PATH]
 moonlight-steam-sync [--json] match     "Name" (--steam APPID | --sgdb ID | --none | --unpin) [--defer-art] [--force-name]
+                                        [--commit MODE]
 moonlight-steam-sync [--json] host      show [--host H] | set NAME | clear
 moonlight-steam-sync [--json] ignore    --all | "Name"... [--ignore-file PATH]
-moonlight-steam-sync [--json] remove    (--all | "Name"...) [--client] | --client
+moonlight-steam-sync [--json] remove    (--all | "Name"...) [--client] | --client [--commit MODE]
 moonlight-steam-sync [--json] launch    [--host H] "Name" [-- extra moonlight flags]
 moonlight-steam-sync [--json] client    [-- extra moonlight flags]
 moonlight-steam-sync [--json] doctor    [--host H] [--owned-apps PATH] [--ignore-file PATH] [--client-shortcut]
@@ -166,7 +184,9 @@ moonlight-steam-sync [--json] doctor    [--host H] [--owned-apps PATH] [--ignore
 
 `--json`, before the subcommand, switches every command to the
 machine-readable event stream described below; it is meant for the Decky
-plugin driving the CLI as a subprocess, not for interactive use.
+plugin driving the CLI as a subprocess, not for interactive use. `MODE` is
+one of `restart`, `await-exit` and `refuse` (see "Steam must restart"
+above).
 
 ### A first import
 
@@ -200,7 +220,8 @@ below), and how many are still pending behind `--limit`.
 
 Exit codes: `0` done (including "some titles or slots had no art"); `1`
 usage or config error, no Steam install, or an unreadable `shortcuts.vdf`
-(nothing is touched); `2` Steam is running and may not be restarted; `3`
+(nothing is touched); `2` Steam is running and may not be restarted, or
+did not exit within `--commit await-exit`'s 60 s; `3`
 Moonlight unreachable; `4` stopped early by repeated 429s or a dead network
 (everything done so far is kept); `130` interrupted with Ctrl-C (same).
 After `4` or `130`, rerun the same command to continue.
@@ -220,9 +241,9 @@ After `4` or `130`, rerun the same command to continue.
   again and still prints only `config.toml`'s list plus the new ones. A
   missing or malformed file is exit `1` before anything is touched.
 - `remove "Name"...` (or `--all`) deletes the named owned shortcuts and their
-  five grid files, with the same one-restart write as `sync`. Shortcuts that
-  do not point at the configured `exe` are never touched. An unknown name is
-  an error before anything happens.
+  five grid files, with the same one-restart write as `sync` (and the same
+  `--commit` modes). Shortcuts that do not point at the configured `exe` are
+  never touched. An unknown name is an error before anything happens.
 - `list --host H` prints every app the host publishes with `added`,
   `ignored` or `new` in front of it, and the same totals line `sync` starts
   with. `list --cached` never asks the host at all: it serves the per-host
@@ -378,7 +399,8 @@ wins over a pin, and the tool never writes the config itself.
 When the title already has a shortcut, its artwork belongs to the old
 match, so `match` deletes its five grid files and clears its icon, with the
 same one-restart write as `remove` (exit `2`, with nothing changed at all,
-when Steam is running and `restart_steam = false`); the next `sync` fetches
+when Steam is running and `restart_steam = false`; `--commit` picks the
+mode as everywhere else); the next `sync` fetches
 the new match's art. `--defer-art` leaves the files and Steam alone and
 only marks the title's art as stale in the cache: the next `sync` (plain
 or `--owned-apps`; the plan reads the cache either way) treats that as a
@@ -398,8 +420,10 @@ command -- nothing already written is redone: a downloaded image, a resolved
 title and a written shortcut each record themselves on disk as they happen.
 The only moment Ctrl-C is held off is the few seconds between Steam being
 shut down and relaunched, so you can never end up with Steam down and the
-file unwritten. Use `--limit N` to bring in a handful of titles at a time
-instead of the whole library at once.
+file unwritten (under `--commit await-exit`, which never takes Steam down,
+only the write itself is protected: a Ctrl-C while waiting for Steam to
+exit is exit 130 with the file untouched). Use `--limit N` to bring in a
+handful of titles at a time instead of the whole library at once.
 
 The tool paces itself between calls (`request_interval_ms`), backs off on
 429s and 5xxs, and stops outright after five 429s in a row rather than burn
@@ -424,15 +448,15 @@ and so on).
 
 | command | events, in order |
 |---|---|
-| `sync` | `start`, `plan`, `replace`\*, `title`\*, `commit`\*, `summary`, (`error`) |
-| `art` | `start`, `title`\*, `commit`, `summary`, (`error`) |
+| `sync` | `start`, `plan`, `replace`\*, `title`\*, (`awaiting-steam-exit`), `commit`\*, `summary`, (`error`) |
+| `art` | `start`, `title`\*, (`awaiting-steam-exit`), `commit`, `summary`, (`error`) |
 | `list` | `start`, `app`\*, `end`, (`error`) |
 | `status` | `start`, `entry`\*, `end`, (`error`) |
 | `search` | `start`, `candidate`\*, `end`, (`error`) |
-| `match` | `start`, (`commit`), `pinned`, (`note`), (`error`) |
+| `match` | `start`, (`awaiting-steam-exit`), (`commit`), `pinned`, (`note`), (`error`) |
 | `host` | `start`, `host`, (`error`) |
 | `ignore` | `start`, `end`, (`error`) |
-| `remove` | `start`, `commit`, `summary`, (`error`) |
+| `remove` | `start`, (`awaiting-steam-exit`), `commit`, `summary`, (`error`) |
 | `launch`, `client` | `start`, `exec`, (`error`) |
 | `doctor` | `start`, `end`, (`error`) |
 
@@ -446,7 +470,11 @@ that lost to another title carries `duplicate_of`), `plan` counts the
 kinds and the replacements, park flips and removals it will make, one
 `replace` event precedes the art phase per replacement, and `sync`'s
 `summary` reports `replaced`, `removed`, `duplicates` and
-`added_by_kind` (`{"stream": n, "shortcut": n}`, new entries only). See
+`added_by_kind` (`{"stream": n, "shortcut": n}`, new entries only).
+`awaiting-steam-exit` (`{"timeout_s": 60}`) appears only under `--commit
+await-exit`, the moment the tool starts waiting for Steam to exit; the
+`commit` that follows has `restarted: false`, and a wait that times out
+ends in `error` (exit 2) with no `commit` at all. See
 `~/specs/moonlight-steam-sync/decky-plugin.md` section 3.4.6 for the full
 schema (every event's exact keys) if you are building another consumer of
 this stream; it is versioned (`schema: 1`) and additive-only.
