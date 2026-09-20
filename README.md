@@ -14,15 +14,16 @@ about it is SteamOS-specific beyond assuming a Linux Steam install and a
 **Status:** feature complete as a standalone tool -- every subcommand below
 works (`sync`, `list`, `ignore`, `remove`, `art`, `status`, `search`,
 `match`, `host`, `launch`, `client`, `doctor`) -- and released through
-`v0.2.0` via the `.pyz` zipapp / `install.sh` pipeline below. On top of
-that, the CLI half of a companion [Decky plugin](#decky-plugin) is in
-progress behind additive flags (`--json`, `--owned-apps`, `--commit`, ...)
-that leave every command byte-identical when they are not passed; see
+`v0.3.0` via the `.pyz` zipapp / `install.sh` pipeline below. `v0.3.0`
+adds the CLI half of a companion [Decky plugin](#decky-plugin) behind
+additive flags (`--json`, `--owned-apps`, `--commit`, ...) that leave
+every command byte-identical when they are not passed; see
 `~/specs/moonlight-steam-sync/decky-plugin.md` and the
-[`CHANGELOG`](CHANGELOG.md)'s `[Unreleased]` entry. **Not yet verified
-against a real Steam Deck beyond the initial `v0.1.0` install** -- the
-device checklist in the design spec (section 8) and the plugin's own PR-0
-device probes are still open. See [`AGENTS.md`](AGENTS.md) for the work
+[`CHANGELOG`](CHANGELOG.md)'s `[0.3.0]` entry. **Not yet verified against
+a real Steam Deck beyond the initial `v0.1.0` install** -- the device
+checklist in the design spec (section 8) is still open, and the plugin's
+PR-0 device probes have only been run on a generic SteamOS machine, not a
+Deck. See [`AGENTS.md`](AGENTS.md) for the work
 plan and the exact release procedure.
 
 ## Install

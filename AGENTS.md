@@ -15,16 +15,15 @@ exactly the way Steam's UI and tools like SGDBoop write it. See
 `~/specs/moonlight-steam-sync/initial-build.md` (sections 2 and 3) for the
 full design; this file is the day-to-day operating summary.
 
-A second spec, `~/specs/moonlight-steam-sync/decky-plugin.md`, is in
-progress on top of that build: a Decky Loader plugin,
+A second spec, `~/specs/moonlight-steam-sync/decky-plugin.md`, is built
+on top of that: a Decky Loader plugin,
 [`episode6/moonlight-steam-sync-decky`](https://github.com/episode6/moonlight-steam-sync-decky)
 (display name **Moonlight Sync**), that runs `sync` from Game Mode and
 stops creating visible shortcuts for games the Deck's own Steam account
-already owns. Its CLI half lands as a stack of PRs behind new,
-additive flags (`--json`, `--owned-apps`, `host`, `search`, `match`,
-`--commit`, ...); until it lands in full, every command's behaviour with
-none of those flags passed stays byte-identical to the release before it
-started (spec 3.11).
+already owns. Its CLI half shipped in `v0.3.0` behind new, additive
+flags (`--json`, `--owned-apps`, `host`, `search`, `match`, `--commit`,
+...); every command's behaviour with none of those flags passed stays
+byte-identical to `v0.2.0`, the release before it started (spec 3.11).
 
 **The CLI contract with the plugin repo** is spec 3.4 (every flag and
 subcommand name) and spec 3.4.6 (the `--json` NDJSON schema, versioned by
@@ -133,14 +132,14 @@ its PR-1 through PR-4 have since added `--json` throughout, `search` and
 (PR-2), `--owned-apps`/hidden shortcuts/replacements/`--client-shortcut`
 (PR-3) and `--commit await-exit` (PR-4) to `sync.py`, `art/cli.py` and
 `__main__.py` -- see the "Owned apps, hidden entries and parking" and
-`sync.py` sections below for the rules those PRs added. What remains on
-the CLI side is cutting `v0.3.0`; on the plugin side,
-`episode6/moonlight-steam-sync-decky` (PR-5 through PR-8) is a separate,
-parallel stack that builds against the `--json` schema through a fake CLI
-and does not need this repo released first. Neither the original spec's
-device checklist (section 8) nor the plugin spec's PR-0 device probes
-(V1-V5, decky spec 2.2-2.3) have been run yet -- both are human gates that
-come after both stacks merge, not before this PR. Do not add code to a
+`sync.py` sections below for the rules those PRs added. That work is
+released as `v0.3.0`, the release the plugin repo,
+`episode6/moonlight-steam-sync-decky` (PR-5 through PR-8, merged), pins
+and bundles; its tests still build against the `--json` schema through a
+fake CLI. The original spec's device checklist (section 8) has not been
+run yet; the plugin spec's PR-0 device probes (V1-V5, decky spec 2.2-2.3)
+ran on 2026-09-20 on a generic SteamOS machine (decky spec 2.5) but not
+on a Steam Deck -- both remain human gates. Do not add code to a
 module ahead of its PR without checking the work plan first -- the
 modules are split the way they are so independent
 PRs can land in parallel.

@@ -6,18 +6,22 @@ project uses [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.3.0] - 2026-09-20
+
 The CLI half of the Decky-plugin work
-(`~/specs/moonlight-steam-sync/decky-plugin.md`, PR-1 through PR-4),
-preparing for `v0.3.0`: a machine-readable event stream, an active-host
-state file and per-host list cache, title-matching pins, and owned-app
-awareness with hidden shortcuts, so a companion Decky plugin (in progress,
-`episode6/moonlight-steam-sync-decky`) can drive `sync` from Steam's Game
-Mode. Every addition is a new flag, a new subcommand or an additive event
-key: with none of them passed, and no `matches.json` entry pinned or
-flagged stale, every command's stdout, stderr, exit code and on-disk bytes
-are unchanged from `v0.2.0` (the three sanctioned exceptions -- the new
-`doctor` lines, the per-host list cache, and `list`'s `same-game-as` line
--- are called out below).
+(`~/specs/moonlight-steam-sync/decky-plugin.md`, PR-1 through PR-4): a
+machine-readable event stream, an active-host state file and per-host list
+cache, title-matching pins, and owned-app awareness with hidden shortcuts,
+so a companion Decky plugin (`episode6/moonlight-steam-sync-decky`, which
+pins this release) can drive `sync` from Steam's Game Mode. Every addition
+is a new flag, a new subcommand or an additive event key: with none of
+them passed, and no `matches.json` entry pinned or flagged stale, every
+command's stdout, stderr, exit code and on-disk bytes are unchanged from
+`v0.2.0` (the three sanctioned exceptions -- the new `doctor` lines, the
+per-host list cache, and `list`'s `same-game-as` line -- are called out
+below).
 
 ### Added
 
