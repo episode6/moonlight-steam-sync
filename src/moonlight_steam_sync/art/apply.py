@@ -125,6 +125,9 @@ class CommitResult:
     restarted: bool = False
     backup: Path | None = None
     relaunch_error: str = ""
+    #: ``--commit await-exit``: written after a running Steam exited on its
+    #: own, never relaunched (mirrors ``sync.Commit.awaited_exit``).
+    awaited_exit: bool = False
 
 
 #: How a provider gets its patched ``ShortcutsFile`` onto disk. Returns a
@@ -194,6 +197,16 @@ class SteamShortcutProvider:
         #: Kept for callers that only care whether Steam was bounced;
         #: mirrors ``last_commit.restarted``.
         self.restarted_steam = False
+        #: Where the writer's human lines ("shutting down Steam ...",
+        #: "waiting for Steam to exit ...") go; ``None`` is stdout. The
+        #: ``art`` command points it at its own progress stream so that
+        #: under ``--json`` nothing but JSON reaches stdout.
+        self.commit_out: TextIO | None = None
+        #: Called with the timeout (seconds) when the writer starts waiting
+        #: for Steam to exit (``--commit await-exit``, decky spec 3.5), so
+        #: the command can emit ``awaiting-steam-exit``. Only the writer
+        #: ``sync.steam_aware_provider`` installs reads either attribute.
+        self.on_awaiting_exit: Callable[[float], None] | None = None
 
     def _load(self) -> tuple[ShortcutsFile, Path]:
         if self._file is None or self._grid_dir is None:

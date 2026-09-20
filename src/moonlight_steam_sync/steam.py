@@ -48,6 +48,7 @@ __all__ = [
     "relaunch",
     "shutdown",
     "steamid3_from_steam64",
+    "wait_for_exit",
 ]
 
 #: ``steamid3 = steam64 - STEAM64_OFFSET`` (spec 3.4).
@@ -481,6 +482,28 @@ def shutdown(
         pass
     except (OSError, subprocess.SubprocessError) as exc:
         raise SteamError(f"could not run 'steam -shutdown': {exc}") from exc
+    return wait_for_exit(runner, timeout=timeout, poll_interval=poll_interval, proc_dir=proc_dir)
+
+
+def wait_for_exit(
+    runner: ProcessRunner | None = None,
+    *,
+    timeout: float = 30.0,
+    poll_interval: float = 0.5,
+    proc_dir: str | os.PathLike[str] = "/proc",
+) -> bool:
+    """Poll :func:`is_running` until Steam is gone or *timeout* seconds pass.
+
+    The wait half of :func:`shutdown`, on its own for ``--commit
+    await-exit`` (decky spec 3.5), where something else -- the plugin's
+    ``StartShutdown`` from Game Mode -- takes the client down and this tool
+    only watches for it to go. Returns ``True`` once Steam is gone (at once
+    if it was not running), ``False`` if it is still up at the deadline.
+    Nothing here catches ``KeyboardInterrupt``: a caller that must not be
+    interrupted defers ``SIGINT`` itself, and one that may (the await-exit
+    wait) lets it through.
+    """
+    runner = runner or ProcessRunner()
     deadline = runner.monotonic() + timeout
     while True:
         if not is_running(runner, proc_dir=proc_dir):

@@ -16,11 +16,14 @@ the happy path:
   phase stopped early, so an interrupted run costs no finished work and
   leaves the library exactly as it was (spec 3.9 items 1 and 4).
 * **Steam is never written under** (spec 2.1). :func:`commit_shortcuts` is
-  the one path from an in-memory :class:`ShortcutsFile` to disk: it checks
-  whether Steam is running, refuses (exit 2) when it may not restart it,
-  otherwise ``steam -shutdown`` -> wait -> write -> ``steam -silent``,
-  with ``SIGINT`` deferred across that window so Ctrl-C can never leave
-  Steam down with the file unwritten.
+  the one path from an in-memory :class:`ShortcutsFile` to disk, in one
+  of three modes (``--commit``, decky spec 3.5): it checks whether Steam
+  is running and then refuses (exit 2), or restarts it --
+  ``steam -shutdown`` -> wait -> write -> ``steam -silent``, with
+  ``SIGINT`` deferred across that window so Ctrl-C can never leave Steam
+  down with the file unwritten -- or, for the Decky plugin, ``await-exit``:
+  waits for something else to take the client down, writes the instant it
+  is gone, and never starts it.
 * **Progress lives on disk, never only in memory** (spec 3.9). A slot is
   done when its grid file exists, a title when it is in ``matches.json``,
   a shortcut when it is in ``shortcuts.vdf``. Re-running after any failure
@@ -908,6 +911,11 @@ class Commit:
     backup: Path | None = None
     #: Steam was shut down and the file written, but ``steam -silent`` failed.
     relaunch_error: str = ""
+    #: ``--commit await-exit`` (decky spec 3.5): the file was written after
+    #: waiting for a running Steam to exit on its own; nothing relaunched
+    #: it (``restarted`` stays false). Not set when Steam was not running
+    #: to begin with, when there was nothing to write, or in any other mode.
+    awaited_exit: bool = False
     #: The serialised file already matched the one on disk, so there was
     #: nothing to write: either the plan changed nothing, or what it changed
     #: serialised to the same bytes (a ``rematched`` replacement that keeps
@@ -946,8 +954,12 @@ def sigint_deferred(out: TextIO | None = None) -> Iterator[None]:
     "written and relaunched" or "not written and relaunched" -- never Steam
     down with nothing done. Everything before this window is safe to
     interrupt (spec 3.9 item 4); this window is at most the 30 s shutdown
-    wait plus one atomic write. Off the main thread ``signal`` refuses, and
-    that is fine: there is nothing to defer there.
+    wait plus one atomic write. In ``await-exit`` mode this tool never
+    takes Steam down, so there is nothing to protect during its wait and
+    only the write itself (backup rotation plus ``os.replace``,
+    milliseconds) sits inside this window (decky spec 3.13 A2). Off the
+    main thread ``signal`` refuses, and that is fine: there is nothing to
+    defer there.
     """
     try:
         previous = signal.signal(signal.SIGINT, signal.SIG_IGN)
@@ -960,6 +972,43 @@ def sigint_deferred(out: TextIO | None = None) -> Iterator[None]:
             signal.signal(signal.SIGINT, previous)
 
 
+#: The ``--commit`` modes (decky spec 3.5). :data:`COMMIT_RESTART` is
+#: v0.2.0's ``restart_steam = true`` behaviour and :data:`COMMIT_REFUSE`
+#: its ``false`` (``--no-restart-steam``); :data:`COMMIT_AWAIT_EXIT` is
+#: for the Decky plugin, which takes the client down itself from Game Mode.
+COMMIT_RESTART = "restart"
+COMMIT_AWAIT_EXIT = "await-exit"
+COMMIT_REFUSE = "refuse"
+COMMIT_MODES = (COMMIT_RESTART, COMMIT_AWAIT_EXIT, COMMIT_REFUSE)
+
+#: How long ``await-exit`` waits for a running Steam to go before giving up
+#: (exit 2, file untouched), and how often it looks (decky spec 3.5: 100 ms,
+#: not the 500 ms of the ``restart`` mode's own shutdown wait -- the gap
+#: between the client exiting and the session relaunching it is what the
+#: write has to land in). Read at call time so a test can shorten them.
+AWAIT_EXIT_TIMEOUT_S = 60.0
+AWAIT_EXIT_POLL_S = 0.1
+
+#: The exact ``await-exit`` timeout text (decky spec 3.5 step 5); the
+#: command prefix is added by the caller like every other error.
+AWAIT_EXIT_TIMED_OUT = "steam did not exit; shortcuts.vdf not written"
+
+#: Told the ``await-exit`` timeout, in seconds, the moment the wait starts
+#: -- the caller emits ``awaiting-steam-exit`` (spec 3.4.6) from it.
+AwaitingHook = Callable[[float], None]
+
+
+def resolve_commit_mode(mode: str | None, config: Config) -> str:
+    """The effective ``--commit`` mode: the flag, else ``config.restart_steam``
+    (decky spec 3.4.8: unset reproduces v0.2.0 exactly, ``restart`` forces a
+    restart even when the file says ``false``, ``await-exit`` ignores it)."""
+    if mode is None:
+        return COMMIT_RESTART if config.restart_steam else COMMIT_REFUSE
+    if mode not in COMMIT_MODES:
+        raise ValueError(f"unknown commit mode {mode!r}")
+    return mode
+
+
 def commit_shortcuts(
     shortcuts_file: ShortcutsFile,
     *,
@@ -967,30 +1016,56 @@ def commit_shortcuts(
     runner: ProcessRunner | None = None,
     out: TextIO | None = None,
     art_written: bool = False,
+    mode: str | None = None,
+    on_awaiting: AwaitingHook | None = None,
 ) -> Commit:
     """The one path from an in-memory shortcut store to disk (spec 3.6).
 
+    ``mode`` is the ``--commit`` mode (decky spec 3.5); ``None`` -- every
+    call site before that flag existed -- means whatever
+    ``config.restart_steam`` says (:func:`resolve_commit_mode`).
+
     * Nothing to write and no new art -> do nothing at all (no restart).
     * Steam not running -> write; it is not started (the user shut it, and
-      the next launch picks the file up).
-    * Steam running and ``restart_steam`` false -> raise
-      :class:`SteamRunningError` if the file changed (exit 2, the caller's
-      art stays on disk); if only art changed, do nothing and let the
-      caller say "restart Steam to see it".
-    * Steam running and ``restart_steam`` true -> ``steam -shutdown``, wait
-      up to 30 s (still up afterwards raises :class:`SteamRunningError`),
-      write, ``steam -silent``. One restart per run, however big (spec 3.9
-      item 8), and ``SIGINT`` is deferred across it.
+      the next launch picks the file up). Every mode.
+    * Steam running, ``refuse`` -> raise :class:`SteamRunningError` if the
+      file changed (exit 2, the caller's art stays on disk); if only art
+      changed, do nothing and let the caller say "restart Steam to see it".
+    * Steam running, ``restart`` -> ``steam -shutdown``, wait up to 30 s
+      (still up afterwards raises :class:`SteamRunningError`), write,
+      ``steam -silent``. One restart per run, however big (spec 3.9 item
+      8), and ``SIGINT`` is deferred across it.
+    * Steam running, ``await-exit`` -> if the file changed, call
+      ``on_awaiting`` and poll :func:`steam.is_running` every
+      :data:`AWAIT_EXIT_POLL_S` for up to :data:`AWAIT_EXIT_TIMEOUT_S`;
+      write the instant it is gone (``SIGINT`` deferred across the write
+      only -- the wait itself is interruptible, decky spec 3.13 A2) and
+      never relaunch it (``Commit.awaited_exit``). Still up at the
+      deadline raises :class:`SteamRunningError` with
+      :data:`AWAIT_EXIT_TIMED_OUT`, file untouched. Only art changed ->
+      do nothing and return at once, the same as ``refuse``: whether new
+      grid files are worth a restart is the caller's (the plugin's) call.
     """
     out = out or sys.stdout
     runner = runner or ProcessRunner()
+    requested = mode
+    mode = resolve_commit_mode(mode, config)
     changed = shortcuts_file.changed
     if not changed and not art_written:
         return Commit(unchanged=True)
 
     running = steam.is_running(runner)
-    if running and not config.restart_steam:
+    if running and mode == COMMIT_REFUSE:
+        if changed and requested == COMMIT_REFUSE:
+            raise SteamRunningError(
+                "Steam is running and --commit refuse was given, so shortcuts.vdf was not "
+                "written (Steam would overwrite it on exit). Artwork already on disk is "
+                "kept and picked up on the next restart; quit Steam and rerun, or use "
+                "--commit restart / --commit await-exit."
+            )
         if changed:
+            # v0.2.0's text, word for word: this is the `restart_steam =
+            # false` / `--no-restart-steam` path (spec 3.11).
             raise SteamRunningError(
                 "Steam is running and restart_steam is false, so shortcuts.vdf was not "
                 "written (Steam would overwrite it on exit). Artwork already on disk is "
@@ -998,6 +1073,12 @@ def commit_shortcuts(
                 "--no-restart-steam / set restart_steam = true."
             )
         return Commit(unchanged=True)
+    if running and mode == COMMIT_AWAIT_EXIT:
+        if not changed:
+            return Commit(unchanged=True)
+        return _await_exit_and_write(
+            shortcuts_file, runner=runner, out=out, on_awaiting=on_awaiting
+        )
 
     result = Commit(unchanged=not changed)
     with sigint_deferred():
@@ -1030,6 +1111,39 @@ def commit_shortcuts(
     return result
 
 
+def _await_exit_and_write(
+    shortcuts_file: ShortcutsFile,
+    *,
+    runner: ProcessRunner,
+    out: TextIO,
+    on_awaiting: AwaitingHook | None,
+) -> Commit:
+    """The ``await-exit`` half of :func:`commit_shortcuts`: Steam is running
+    and the file has changed. Never sends ``steam -shutdown`` and never
+    spawns ``steam``: the client's exit is someone else's doing (the
+    plugin's ``StartShutdown`` from Game Mode, or the user quitting it),
+    and in a gamescope session the session relaunches it (decky spec 2.3).
+    """
+    timeout = AWAIT_EXIT_TIMEOUT_S
+    print(
+        f"waiting for Steam to exit (up to {timeout:.0f} s) before writing shortcuts.vdf",
+        file=out,
+    )
+    if on_awaiting is not None:
+        on_awaiting(timeout)
+    # Interruptible on purpose: nothing has been done to Steam, so a Ctrl-C
+    # here leaves the file untouched and exits 130 (decky spec 3.13 A2).
+    gone = steam.wait_for_exit(runner, timeout=timeout, poll_interval=AWAIT_EXIT_POLL_S)
+    if not gone:
+        raise SteamRunningError(AWAIT_EXIT_TIMED_OUT)
+    result = Commit(awaited_exit=True)
+    with sigint_deferred():
+        before = _backups(shortcuts_file)
+        result.written = shortcuts_file.write()
+        result.backup = next(iter(sorted(_backups(shortcuts_file) - before)), None)
+    return result
+
+
 def _backups(shortcuts_file: ShortcutsFile) -> set[Path]:
     path = shortcuts_file.path
     if path is None or not path.parent.is_dir():
@@ -1038,20 +1152,36 @@ def _backups(shortcuts_file: ShortcutsFile) -> set[Path]:
 
 
 def steam_aware_provider(
-    config: Config, *, runner: ProcessRunner | None = None
+    config: Config, *, runner: ProcessRunner | None = None, mode: str | None = None
 ) -> SteamShortcutProvider:
-    """The ``art`` command's provider: commits through :func:`commit_shortcuts`."""
+    """The ``art`` command's provider: commits through :func:`commit_shortcuts`.
+
+    ``mode`` is ``art --commit`` (decky spec 3.13 A1), passed straight
+    through. The provider's :attr:`~SteamShortcutProvider.commit_out` and
+    :attr:`~SteamShortcutProvider.on_awaiting_exit` are read when the
+    write happens, so ``cmd_art`` can route the writer's human lines and
+    the ``awaiting-steam-exit`` event through its own :class:`Reporter`.
+    """
 
     def write(shortcuts_file: ShortcutsFile) -> CommitResult:
-        commit = commit_shortcuts(shortcuts_file, config=config, runner=runner)
+        commit = commit_shortcuts(
+            shortcuts_file,
+            config=config,
+            runner=runner,
+            out=provider.commit_out,
+            mode=mode,
+            on_awaiting=provider.on_awaiting_exit,
+        )
         return CommitResult(
             written=commit.written,
             restarted=commit.restarted,
             backup=commit.backup,
             relaunch_error=commit.relaunch_error,
+            awaited_exit=commit.awaited_exit,
         )
 
-    return SteamShortcutProvider(config, writer=write)
+    provider = SteamShortcutProvider(config, writer=write)
+    return provider
 
 
 # ---------------------------------------------------------------------------
@@ -1069,6 +1199,8 @@ class SyncOptions:
     park_unpublished: bool = False
     #: ``--client-shortcut`` (decky spec 3.4.5).
     client_shortcut: bool = False
+    #: ``--commit`` (decky spec 3.5); ``None`` lets ``restart_steam`` decide.
+    commit: str | None = None
 
     @classmethod
     def from_args(cls, args: argparse.Namespace) -> SyncOptions:
@@ -1079,6 +1211,7 @@ class SyncOptions:
             retry_missing=bool(getattr(args, "retry_missing", False)),
             park_unpublished=bool(getattr(args, "park_unpublished", False)),
             client_shortcut=bool(getattr(args, "client_shortcut", False)),
+            commit=getattr(args, "commit", None),
         )
 
 
@@ -1210,6 +1343,17 @@ def _commit_event_fields(commit: Commit) -> dict[str, Any]:
         "backup": commit.backup.name if commit.backup is not None else None,
         "relaunch_error": commit.relaunch_error,
     }
+
+
+def awaiting_hook(reporter: Reporter) -> AwaitingHook:
+    """The ``awaiting-steam-exit`` event (spec 3.4.6), for
+    :func:`commit_shortcuts`'s ``on_awaiting``; the human line is the
+    writer's own (it goes to ``out`` like "shutting down Steam" does)."""
+
+    def emit(timeout_s: float) -> None:
+        reporter.event("awaiting-steam-exit", timeout_s=int(timeout_s))
+
+    return emit
 
 
 def cmd_sync(
@@ -1439,6 +1583,8 @@ def _sync(
             runner=deps.runner,
             out=art_out,
             art_written=bool(summary and summary.written),
+            mode=options.commit,
+            on_awaiting=awaiting_hook(reporter),
         )
     except SteamRunningError as exc:
         reporter.event(
@@ -1447,6 +1593,21 @@ def _sync(
         )
         reporter.error(f"sync: {exc}", EXIT_STEAM_RUNNING)
         return EXIT_STEAM_RUNNING
+    except KeyboardInterrupt:
+        # Only the await-exit wait lets a Ctrl-C through here (decky spec
+        # 3.13 A2): the file is untouched, the art is on disk, and the
+        # rerun only writes. Reported from here rather than cmd_sync's
+        # catch-all so the summary carries the real art-phase numbers.
+        if services is not None:
+            services.cache.flush()
+        reporter.event(
+            "summary",
+            **_summary_event_fields(
+                plan, summary, None, exit_code=EXIT_SIGINT, stop_reason="interrupted"
+            ),
+        )
+        reporter.error(RESUME_HINT, EXIT_SIGINT)
+        return EXIT_SIGINT
 
     reporter.line(commit.describe(library.user.shortcuts_path))
     reporter.event("commit", **_commit_event_fields(commit))
@@ -1931,10 +2092,23 @@ def cmd_remove(
         library.file.remove(entry)
     write_out = reporter.err if reporter.json else reporter.out
     try:
-        commit = commit_shortcuts(library.file, config=config, runner=deps.runner, out=write_out)
+        commit = commit_shortcuts(
+            library.file,
+            config=config,
+            runner=deps.runner,
+            out=write_out,
+            mode=getattr(args, "commit", None),
+            on_awaiting=awaiting_hook(reporter),
+        )
     except SteamRunningError as exc:
         reporter.error(f"remove: {exc}", EXIT_STEAM_RUNNING)
         return EXIT_STEAM_RUNNING
+    except KeyboardInterrupt:
+        # The await-exit wait is interruptible (decky spec 3.13 A2): nothing
+        # was written and no grid file touched.
+        reporter.event("summary", **_remove_summary_event_fields(0, EXIT_SIGINT))
+        reporter.error(RESUME_HINT, EXIT_SIGINT)
+        return EXIT_SIGINT
 
     deleted = 0
     for entry in victims:
@@ -1950,6 +2124,13 @@ def cmd_remove(
 
 
 __all__ = [
+    "AWAIT_EXIT_POLL_S",
+    "AWAIT_EXIT_TIMED_OUT",
+    "AWAIT_EXIT_TIMEOUT_S",
+    "COMMIT_AWAIT_EXIT",
+    "COMMIT_MODES",
+    "COMMIT_REFUSE",
+    "COMMIT_RESTART",
     "KIND_CLIENT",
     "KIND_DUPLICATE",
     "KIND_IGNORED",
@@ -1971,6 +2152,7 @@ __all__ = [
     "SyncOptions",
     "apply_replacement",
     "art_targets",
+    "awaiting_hook",
     "build_plan",
     "client_shortcut_entry",
     "cmd_ignore",
@@ -1985,6 +2167,7 @@ __all__ = [
     "new_shortcut",
     "open_library",
     "patch_icons_from_disk",
+    "resolve_commit_mode",
     "resolve_titles",
     "steam_aware_provider",
     "toml_string",
