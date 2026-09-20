@@ -523,6 +523,19 @@ class ShortcutsFile:
         """Drop an entry. Remaining entries keep their existing keys."""
         self.shortcuts.remove(shortcut)
 
+    def replace(self, old: Shortcut, new: Shortcut) -> Shortcut:
+        """Swap *old* for *new* in place: same position, same numeric key.
+
+        A replacement (decky spec 3.4.2) is a remove plus an append in
+        effect, but keeping the slot means the rest of the file -- and
+        every other entry's key -- is untouched, so a backup diff shows
+        exactly one entry changing.
+        """
+        index = self.shortcuts.index(old)
+        new.index_key = old.index_key
+        self.shortcuts[index] = new
+        return new
+
     def _next_index(self) -> int:
         highest = -1
         for shortcut in self.shortcuts:
