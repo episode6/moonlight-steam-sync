@@ -384,6 +384,12 @@ class Plan:
     #: replacement, no grid rename, no downloads.
     to_park: list[Shortcut] = field(default_factory=list)
     to_unpark: list[Shortcut] = field(default_factory=list)
+    #: Published ``stream`` entries that are visible right now (someone
+    #: unhid them): hidden again in place by their kind. Not parking --
+    #: parking is for names the active host does not publish (decky spec
+    #: 3.12) -- so reported apart from ``to_park`` and never in the
+    #: ``plan`` event's park counts.
+    to_hide: list[Shortcut] = field(default_factory=list)
     #: Published names whose owned entry is hidden but of kind ``shortcut``
     #: -- what ``list`` labels ``parked`` (decky spec 3.12); only computed
     #: when ``--owned-apps`` says what the kinds are.
@@ -403,7 +409,10 @@ class Plan:
     stale: set[str] = field(default_factory=set)
 
     def label(self, app: moonlight.App) -> str:
-        if app in self.ignored:
+        if app in self.ignored or app.name in self.duplicates:
+            # A duplicate gets no tile (decky spec 3.3): for the human list
+            # that is "ignored", whatever entry it holds right now; the
+            # `app` event's `kind` / `duplicate_of` say why.
             return LABEL_IGNORED
         if app.name in self.parked_names:
             return LABEL_PARKED
@@ -441,6 +450,7 @@ class Plan:
             or self.to_remove
             or self.to_park
             or self.to_unpark
+            or self.to_hide
             or self.client_to_add
         )
 
@@ -457,6 +467,8 @@ class Plan:
             line += f", {len(self.to_park)} to park"
         if self.to_unpark:
             line += f", {len(self.to_unpark)} to unpark"
+        if self.to_hide:
+            line += f", {len(self.to_hide)} to hide"
         if self.pending:
             line += f", {len(self.pending)} pending (--limit {self.limit})"
         return line
@@ -502,7 +514,8 @@ def build_plan(
     Per published name, an existing entry whose ``AppName`` is not the one
     its kind wants is a :class:`Replacement` (``kind-changed`` /
     ``name-changed``); one that only differs in ``IsHidden`` is flipped in
-    place (:attr:`Plan.to_park` / :attr:`Plan.to_unpark`, decky spec 3.11)
+    place (:attr:`Plan.to_hide` for a visible ``stream`` entry,
+    :attr:`Plan.to_unpark` for a hidden ``shortcut`` one, decky spec 3.11)
     -- both only once ``owned`` is given, since v0.2.0 adopted an entry
     under any name. ``--limit`` counts additions and replacements together,
     in host-list order, and never splits a replacement or counts a flip.
@@ -606,10 +619,11 @@ def build_plan(
             plan.present.append(app)
             # Decky spec 3.11: IsHidden is the one field edited in place. A
             # `stream` entry someone unhid is hidden again by its kind
-            # (owned-apps knowledge); a hidden `shortcut` entry is shown
-            # again only by --park-unpublished, which is what parked it.
+            # (owned-apps knowledge) -- not parked, the host publishes it;
+            # a hidden `shortcut` entry is shown again only by
+            # --park-unpublished, which is what parked it.
             if same_name and hidden_wanted and not hidden_now and naming_active:
-                plan.to_park.append(entry)
+                plan.to_hide.append(entry)
             elif same_name and hidden_now and not hidden_wanted and park_unpublished:
                 plan.to_unpark.append(entry)
         if hidden_now and kind == KIND_SHORTCUT and flips_active:
@@ -1329,6 +1343,8 @@ def _sync(
         entry.is_hidden = 1
     for entry in plan.to_unpark:
         entry.is_hidden = 0
+    for entry in plan.to_hide:
+        entry.is_hidden = 1
     targets = art_targets(plan, library.grid_dir)
 
     title_counter = itertools.count(1)
@@ -1433,6 +1449,8 @@ def _final_summary(plan: Plan, summary: RunSummary | None, commit: Commit) -> li
         line += f", parked {len(plan.to_park) if written else 0}"
     if plan.to_unpark:
         line += f", unparked {len(plan.to_unpark) if written else 0}"
+    if plan.to_hide:
+        line += f", hidden {len(plan.to_hide) if written else 0}"
     if plan.client_to_add is not None and written:
         line += ", added the Moonlight client shortcut"
     lines = [line]
@@ -1447,11 +1465,12 @@ def _final_summary(plan: Plan, summary: RunSummary | None, commit: Commit) -> li
         + len(plan.to_remove)
         + len(plan.to_park)
         + len(plan.to_unpark)
+        + len(plan.to_hide)
         + (1 if plan.client_to_add is not None else 0)
     )
     if other_changes and not commit.written:
         lines.append(
-            f"{other_changes} planned replacement(s), removal(s) and park flip(s) were not "
+            f"{other_changes} planned replacement(s), removal(s) and IsHidden flip(s) were not "
             "written (see above)"
         )
     if plan.pending:
@@ -1474,8 +1493,8 @@ def _dry_run(
     services: ArtServices | None,
     reporter: Reporter,
 ) -> int:
-    """Print the plan: shortcuts to add, replace, remove or park, and the
-    per-slot art source and URL.
+    """Print the plan: shortcuts to add, replace, remove, park or hide, and
+    the per-slot art source and URL.
 
     Touches nothing under Steam. With art enabled it does resolve each title
     (that is the only way to know a CDN URL), so the match cache is the one
@@ -1522,6 +1541,9 @@ def _dry_run(
         for entry in plan.to_unpark:
             name = entry.moonlight_name(config.launch_options, config.name_suffix)
             reporter.line(f"  unpark   {name} [{entry.appid}]")
+        for entry in plan.to_hide:
+            name = entry.moonlight_name(config.launch_options, config.name_suffix)
+            reporter.line(f"  hide     {name} [{entry.appid}] (stream entry, hidden by its kind)")
         for item in plan.pending:
             name = item.app.name if isinstance(item, Addition) else item.name
             reporter.line(f"  pending  {name} (beyond --limit {plan.limit})")
@@ -1692,6 +1714,8 @@ def cmd_list(
         fuzzy = bool(entry and entry.how.endswith(":fuzzy"))
         same = _same_game_as(app.name, match_cache, other_hosts)
         reporter.line(f"{label:8} {app.name}")
+        if app.name in plan.duplicates:
+            reporter.line(f"         duplicate-of: {plan.duplicates[app.name]}")
         for item in same:
             reporter.line(f"         same-game-as: {item['name']} ({item['host']})")
         reporter.event(

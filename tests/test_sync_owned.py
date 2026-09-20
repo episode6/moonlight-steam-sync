@@ -517,6 +517,7 @@ def test_art_force_clears_stale_art_too(world, tmp_path, monkeypatch):
     assert "stale_art" not in cache_entry(world, "Hollow Knight")
 
 
+
 # ---------------------------------------------------------------------------
 # duplicates (spec 3.3, decision 14)
 # ---------------------------------------------------------------------------
@@ -571,7 +572,15 @@ def test_two_titles_resolving_to_one_owned_game_yield_one_hidden_entry_and_a_dup
     assert apps["Elden Ring"]["kind"] == "stream" and apps["Elden Ring"]["duplicate_of"] is None
     assert apps["Elden Ring (GOG)"]["kind"] == "duplicate"
     assert apps["Elden Ring (GOG)"]["duplicate_of"] == "Elden Ring"
-    assert apps["Elden Ring (GOG)"]["label"] == "new"
+    # No tile after the next sync, whatever entry it holds now: "ignored"
+    # for the human list, with the winner named under it.
+    assert apps["Elden Ring (GOG)"]["label"] == "ignored"
+    human = world.run(["list", "--owned-apps", owned])
+    assert human.code == 0, human.err
+    lines = human.out.splitlines()
+    assert "ignored  Elden Ring (GOG)" in lines
+    at = lines.index("ignored  Elden Ring (GOG)")
+    assert lines[at + 1] == "         duplicate-of: Elden Ring"
 
 
 def test_pinning_the_duplicate_to_none_makes_it_a_visible_shortcut_again(
@@ -1193,6 +1202,43 @@ def test_park_unpublished_alone_flips_is_hidden_without_owned_apps(world, tmp_pa
     assert result.code == 0, result.err
     assert "1 to unpark" in result.out
     assert entry(world, "Hollow Knight").is_hidden == 0
+
+
+def test_rehiding_an_unhidden_stream_entry_is_not_reported_as_parking(
+    world, tmp_path, monkeypatch
+):
+    """Spec 3.11: ``IsHidden`` is edited in place, so a ``stream`` entry
+    someone unhid is hidden again without a replacement -- but that is not
+    parking (spec 3.12: a name the active host does *not* publish), so it
+    is reported as ``to hide`` / ``hidden``, never in the ``plan`` event's
+    park counts, and the ``plan`` event's keys stay the spec's."""
+    host_publishes(tmp_path, monkeypatch, ["Elden Ring"])
+    owned = owned_file(tmp_path, {ELDEN_STEAM: ELDEN_OWNED})
+    assert world.run(["sync", "--owned-apps", owned]).code == 0
+    elden = entry(world, "Elden Ring")
+    assert elden.is_hidden == 1
+    library = world.library()
+    next(s for s in library if s.appid == elden.appid).is_hidden = 0
+    library.write()
+
+    dry = world.run(["sync", "--owned-apps", owned, "--dry-run", "--no-art"])
+    assert dry.code == 0, dry.err
+    assert "1 to hide" in dry.out and "to park" not in dry.out
+    assert f"  hide     Elden Ring [{elden.appid}] (stream entry, hidden by its kind)" in dry.out
+    assert entry(world, "Elden Ring").is_hidden == 0
+
+    result = world.run(["--json", "sync", "--owned-apps", owned])
+
+    assert result.code == 0, result.err
+    plan = next(e for e in json_lines(result.out) if e["event"] == "plan")
+    assert plan["to_park"] == 0 and plan["to_unpark"] == 0 and plan["parked"] == 0
+    assert plan["present"] == 1 and plan["to_replace"] == 0 and plan["to_add"] == 0
+    assert "to_hide" not in plan
+    assert "1 to hide" in result.err and ", hidden 1" in result.err
+    assert "park" not in result.err
+    after = entry(world, "Elden Ring")
+    assert after.appid == elden.appid and after.is_hidden == 1
+    assert result.calls == [] and result.runner.shutdowns == 1
 
 
 def test_a_user_hidden_shortcut_is_unparked_only_with_the_flag(world, tmp_path, monkeypatch):

@@ -177,10 +177,11 @@ independent PRs can land in parallel.
   `--owned-apps` is passed (`list --owned-apps` reads them from the
   cache, never resolving), so a `stale_art` entry is acted on by `sync
   --owned-apps` and `art --force` only; every new human line is printed
-  only when the plan holds the change it describes; `IsHidden` is only
-  ever flipped by `--owned-apps` (a visible `stream` entry is re-hidden)
-  or `--park-unpublished` (parking and unparking); and `list` labels a
-  hidden entry `parked` only under `--owned-apps`.
+  only when the plan holds the change it describes;
+  `IsHidden` is only ever flipped by `--owned-apps` (a visible `stream`
+  entry is re-hidden, `Plan.to_hide`) or `--park-unpublished` (parking
+  and unparking); and `list` labels a hidden entry `parked`, and a
+  duplicate `ignored`, only under `--owned-apps`.
 - **A hidden entry is still an owned entry.** `remove --all`, adoption and
   the plan treat it exactly like a visible one; nothing looks a shortcut up
   by `AppName`. A `stream` entry's `AppName` is the owned game's display
@@ -203,6 +204,13 @@ independent PRs can land in parallel.
   `shortcut -> stream` flip that keeps the `AppName` all toggle it without
   a replacement, and `--limit` never counts a flip (it counts additions and
   replacements together, host-list order, never splitting a replacement).
+  The re-hide is not parking, though: parking is for a name the active
+  host does *not* publish (decky spec 3.12), and the plugin reads the
+  `plan` event's `to_park` as "titles the other host has parked", so a
+  visible `stream` entry goes in `Plan.to_hide` (`N to hide` / `hidden N`
+  in the human lines, a `hide` line under `--dry-run`) and never in
+  `to_park`. The `plan` event's keys are the spec's (3.4.6); there is no
+  `to_hide` key.
 - **Entries never record a host.** Which host a tile streams from is
   decided at launch time by the active-host rule; the tool's only
   host-scoped state is the read-only list cache under `<cache dir>/hosts/`.

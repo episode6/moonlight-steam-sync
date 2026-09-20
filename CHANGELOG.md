@@ -32,6 +32,13 @@ flags below are passed and no title has been pinned.
 - `match --defer-art`'s stale mark is now acted on: the next `sync
   --owned-apps` replaces the title's art (old grid files deleted, new
   match fetched, one restart) and `art --force` clears the mark.
+- `--owned-apps` refuses a `launch_options` template without `{name}`
+  (exit 1, nothing touched): a hidden entry's name is the owned game's,
+  so the launch options are the only way back to the Moonlight name.
+- `list` labels a `duplicate` title `ignored` (it gets no tile) and
+  prints `duplicate-of: <winner>` under it; a visible `stream` entry
+  that `sync --owned-apps` hides again in place is reported as
+  `to hide` / `hidden`, apart from parking.
 - `sync --park-unpublished`: hides in place every owned shortcut the
   active host does not publish (same appid; art, pin and layout kept) and
   shows published ones again, so switching hosts and back is one write
