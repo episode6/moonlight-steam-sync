@@ -221,6 +221,14 @@ def cmd_art(
         reporter.error("interrupted; resume with the same command", EXIT_SIGINT)
         return EXIT_SIGINT
 
+    if force and not summary.stopped_early:
+        # `art --force` refilled every slot of every title it ran for, so
+        # whatever `match --defer-art` flagged as stale no longer is (decky
+        # spec 3.4.4); never after an early stop.
+        for result in summary.results:
+            if not result.skipped:
+                services.cache.clear_stale_art(result.target.name)
+
     for line in summary.lines():
         reporter.line(line)
     interrupted_message: str | None = None

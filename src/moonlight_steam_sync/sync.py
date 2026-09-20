@@ -604,9 +604,14 @@ def build_plan(
             replaced_or_removed.add(id(entry))
         else:
             plan.present.append(app)
-            if same_name and hidden_now != hidden_wanted and flips_active:
-                # Decky spec 3.11: IsHidden is the one field edited in place.
-                (plan.to_park if hidden_wanted else plan.to_unpark).append(entry)
+            # Decky spec 3.11: IsHidden is the one field edited in place. A
+            # `stream` entry someone unhid is hidden again by its kind
+            # (owned-apps knowledge); a hidden `shortcut` entry is shown
+            # again only by --park-unpublished, which is what parked it.
+            if same_name and hidden_wanted and not hidden_now and naming_active:
+                plan.to_park.append(entry)
+            elif same_name and hidden_now and not hidden_wanted and park_unpublished:
+                plan.to_unpark.append(entry)
         if hidden_now and kind == KIND_SHORTCUT and flips_active:
             plan.parked_names.add(name)
 
@@ -1263,7 +1268,11 @@ def cmd_sync(
 
     try:
         if options.dry_run:
-            return _dry_run(plan, library, config, services, reporter)
+            # --no-art: no per-slot plan (the services, if any, were only
+            # there to resolve the kinds).
+            return _dry_run(
+                plan, library, config, None if options.no_art else services, reporter
+            )
         return _sync(plan, library, config, options, services, deps, reporter)
     except KeyboardInterrupt:
         if services is not None:
@@ -1329,7 +1338,9 @@ def _sync(
         reporter.title(**_title_event_fields(index, len(targets), result))
 
     summary: RunSummary | None = None
-    if services is not None:
+    # With --owned-apps the services exist for the resolution step even
+    # under --no-art; the art phase itself is what --no-art skips.
+    if services is not None and not options.no_art:
         provider = LibraryProvider(library.file, targets)
         summary = run_art(
             targets,

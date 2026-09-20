@@ -539,12 +539,18 @@ def cmd_client(
         )
         return EXIT_MOONLIGHT_UNREACHABLE
 
+    # With no positional before it, argparse hands REMAINDER the `--`
+    # separator itself (`client -- --fullscreen`); Moonlight must not see it.
+    extra = list(args.extra)
+    if extra[:1] == ["--"]:
+        extra = extra[1:]
+
     reporter.event("exec", host=cfg.host or None)
     # See cmd_launch: flush before execvp replaces the process image.
     out.flush()
     err.flush()
     try:
-        moonlight.run_client(args.extra)
+        moonlight.run_client(extra)
     except moonlight.MoonlightNotFoundError as exc:
         reporter.error(f"client: {exc}", EXIT_MOONLIGHT_UNREACHABLE)
         return EXIT_MOONLIGHT_UNREACHABLE
