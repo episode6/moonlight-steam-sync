@@ -135,9 +135,10 @@ its PR-1 through PR-4 have since added `--json` throughout, `search` and
 (PR-3) and `--commit await-exit` (PR-4) to `sync.py`, `art/cli.py` and
 `__main__.py` -- see the "Owned apps, hidden entries and parking" and
 `sync.py` sections below for the rules those PRs added. That work is
-released as `v0.3.0`, the release the plugin repo,
+released as `v0.3.0`; the plugin repo,
 `episode6/moonlight-steam-sync-decky` (PR-5 through PR-8, merged), pins
-and bundles; its tests still build against the `--json` schema through a
+and bundles the latest patch of it (`v0.3.1`, the `procenv.py` fix from
+the first device run); its tests still build against the `--json` schema through a
 fake CLI. The original spec's device checklist (section 8) has not been
 run yet; the plugin spec's PR-0 device probes (V1-V5, decky spec 2.2-2.3)
 ran on 2026-09-20 on a generic SteamOS machine (decky spec 2.5) but not
