@@ -38,7 +38,8 @@ flags below are passed and no title has been pinned.
   equivalent `[overrides]` line to paste into `config.toml` (which still
   wins over a pin). A title that already has a shortcut loses its grid
   files and icon so the next `sync` fetches the new match's art (one Steam
-  restart, like `remove`); `--defer-art` instead only marks the cached
+  restart, like `remove`, reported under `--json` by the same `commit`
+  event); `--defer-art` instead only marks the cached
   entry `stale_art` (acted on by `sync` in a later change) and leaves Steam
   alone. The mark survives re-resolution: `--unpin --defer-art` leaves a
   `"how": "unpinned"` placeholder that carries it, and the next run's

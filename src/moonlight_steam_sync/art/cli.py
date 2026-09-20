@@ -789,6 +789,9 @@ def cmd_match(
         except steam.SteamRunningError as exc:
             reporter.error(f"match: {exc}", EXIT_STEAM_RUNNING)
             return EXIT_STEAM_RUNNING
+        # The same `commit` event `remove` emits for the same sequence, so a
+        # --json consumer can see `restarted` / `relaunch_error` here too.
+        reporter.event("commit", **sync._commit_event_fields(commit))
 
     deferred = shortcut is not None and not immediate
     if pin is not None:

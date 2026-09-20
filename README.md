@@ -353,7 +353,7 @@ and so on).
 | `list` | `start`, `app`\*, `end`, (`error`) |
 | `status` | `start`, `entry`\*, `end`, (`error`) |
 | `search` | `start`, `candidate`\*, `end`, (`error`) |
-| `match` | `start`, `pinned`, (`note`), (`error`) |
+| `match` | `start`, (`commit`), `pinned`, (`note`), (`error`) |
 | `host` | `start`, `host`, (`error`) |
 | `ignore` | `start`, `end`, (`error`) |
 | `remove` | `start`, `commit`, `summary`, (`error`) |

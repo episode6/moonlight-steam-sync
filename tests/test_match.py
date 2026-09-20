@@ -811,6 +811,22 @@ def test_match_json_emits_start_then_pinned_then_the_art_note(world, tmp_path, m
     assert f'pinned "Elden Ring": steam {HOLLOW_STEAM}, sgdb {HOLLOW_SGDB}' in result.err
 
 
+def test_match_json_immediate_path_emits_commit_before_pinned(world, tmp_path, monkeypatch):
+    """The immediate path runs the same shutdown -> write -> relaunch as
+    ``remove``, so it reports it the same way: a ``commit`` event with
+    ``written`` / ``restarted`` / ``backup`` / ``relaunch_error``. The
+    deferred path (above) writes no file and emits none."""
+    synced(world, tmp_path, monkeypatch, ["Elden Ring"])
+    result = run_match(world, ["--json", "match", "Elden Ring", "--steam", str(HOLLOW_STEAM)])
+    assert result.code == 0, result.err
+    events = json_lines(result.out)
+    assert [e["event"] for e in events] == ["start", "commit", "pinned"]
+    commit = events[1]
+    assert commit["written"] is True and commit["restarted"] is True
+    assert commit["backup"] == world.backups()[-1].name
+    assert commit["relaunch_error"] == ""
+
+
 def test_match_json_none_and_unpin(world):
     none = json_lines(run_match(world, ["--json", "match", "Elden Ring", "--none",
                                         "--defer-art"]).out)
