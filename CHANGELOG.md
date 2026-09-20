@@ -6,7 +6,11 @@ project uses [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
-Prepared for `v0.3.1`.
+Nothing yet.
+
+## [0.3.1] - 2026-09-20
+
+A patch release from the first device run of the Decky plugin.
 
 ### Fixed
 

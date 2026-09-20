@@ -14,7 +14,7 @@ about it is SteamOS-specific beyond assuming a Linux Steam install and a
 **Status:** feature complete as a standalone tool -- every subcommand below
 works (`sync`, `list`, `ignore`, `remove`, `art`, `status`, `search`,
 `match`, `host`, `launch`, `client`, `doctor`) -- and released through
-`v0.3.0` via the `.pyz` zipapp / `install.sh` pipeline below. `v0.3.0`
+`v0.3.1` via the `.pyz` zipapp / `install.sh` pipeline below. `v0.3.0`
 adds the CLI half of a companion [Decky plugin](#decky-plugin) behind
 additive flags (`--json`, `--owned-apps`, `--commit`, ...) that leave
 every command byte-identical when they are not passed; see
