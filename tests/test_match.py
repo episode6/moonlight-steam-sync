@@ -537,7 +537,8 @@ def test_unpin_defer_art_keeps_the_art_stale_across_the_re_resolution(
     """``match --unpin --defer-art`` is what the plugin runs for unpin
     (decky spec 3.7). The entry is gone as a match, but the grid files on
     disk still belong to the pin, so a placeholder carries ``stale_art``
-    and the next ``sync``'s re-resolution inherits it (spec 3.4.4)."""
+    and the next ``sync``'s re-resolution inherits it and acts on it (spec
+    3.4.4)."""
     synced(world, tmp_path, monkeypatch, ["Elden Ring"])
     elden = shortcut(world, "Elden Ring")
     assert run_match(
@@ -573,22 +574,29 @@ def test_unpin_defer_art_keeps_the_art_stale_across_the_re_resolution(
     app = next(e for e in json_lines(listed.out) if e["event"] == "app")
     assert app["match"] is None and app["fuzzy"] is False
 
-    # The next sync re-resolves (a real search, not the pin) and the fresh
-    # entry still carries the flag; PR-2 leaves acting on it to the
-    # owned-apps PR, so the art on disk is kept and nothing is written.
+    # The next sync re-resolves (a real search, not the pin) and, because
+    # the placeholder carried the flag, treats the title as a `rematched`
+    # replacement: the pin's grid files go, the fresh match's art is
+    # fetched, and the flag is cleared once that art phase has run (spec
+    # 3.4.4, "consequences for PR-3"; the replacement itself is covered in
+    # tests/test_sync_owned.py). The entry keeps its appid and icon path,
+    # so shortcuts.vdf stays byte-identical, yet Steam is restarted for the
+    # new art.
     again = world.run(["sync"])
     assert again.code == 0, again.err
     assert f"{AUTOCOMPLETE}Elden%20Ring" in again.calls
+    assert any(f"/apps/{ELDEN_STEAM}/" in url for url in again.calls)
     assert not any(f"/apps/{HOLLOW_STEAM}/" in url for url in again.calls)
+    assert "(rematched)" in again.out and again.runner.shutdowns == 1
     entry = cache_entry(world, "Elden Ring")
     assert entry["how"] == "sgdb:exact-verified" and entry["steam_appid"] == ELDEN_STEAM
-    assert entry["stale_art"] is True
+    assert "stale_art" not in entry
     assert world.shortcuts_path.read_bytes() == vdf
     assert len(grid_files_of(world, elden.appid)) == 5
-    # A second sync is the usual cache hit: zero calls, flag still there.
+    # A third sync is the usual cache hit: zero calls, nothing to do.
     third = world.run(["sync"])
-    assert third.code == 0 and third.calls == []
-    assert cache_entry(world, "Elden Ring")["stale_art"] is True
+    assert third.code == 0 and third.calls == [] and third.runner.shutdowns == 0
+    assert "stale_art" not in cache_entry(world, "Elden Ring")
 
 
 def test_unpin_defer_art_without_a_shortcut_deletes_the_entry_outright(
@@ -1055,17 +1063,36 @@ def test_matches_json_written_by_a_plain_sync_has_no_new_keys(world, tmp_path, m
         assert entry["how"] != "pinned"
 
 
-def test_shortcuts_file_is_unchanged_by_a_plain_sync_after_a_deferred_pin(
+def test_a_plain_sync_after_a_deferred_pin_acts_on_it_once_and_then_settles(
     world, tmp_path, monkeypatch
 ):
-    """PR-2 records ``stale_art`` but does not act on it (that is PR-3's
-    ``rematched`` replacement): a second sync after a deferred pin keeps
-    the art that is on disk and writes nothing."""
+    """A ``stale_art`` entry is one of the two cache states spec 3.11 carves
+    out of the byte-identity invariant: the next plain ``sync`` acts on it
+    -- a ``rematched`` replacement that deletes the title's grid files and
+    clears its ``icon``, so ``shortcuts.vdf`` is written once; with
+    ``--none`` pinned, without a single lookup -- and clears the flag (spec
+    3.4.4), after which the invariant holds again: the sync after that makes
+    zero calls and changes nothing on disk."""
     synced(world, tmp_path, monkeypatch, ["Elden Ring"])
+    elden = shortcut(world, "Elden Ring")
     assert run_match(world, ["match", "Elden Ring", "--none", "--defer-art"]).code == 0
     before = world.shortcuts_path.read_bytes()
+
     result = world.run(["sync"])
+
     assert result.code == 0, result.err
     assert result.calls == []
-    assert world.shortcuts_path.read_bytes() == before
+    assert "(rematched)" in result.out and result.runner.shutdowns == 1
+    assert world.shortcuts_path.read_bytes() != before
+    after = shortcut(world, "Elden Ring")
+    assert after.appid == elden.appid and after.icon == ""
+    assert grid_files_of(world, elden.appid) == []
     assert ShortcutsFile.read(world.shortcuts_path).owned(world.config.exe)
+    entry = cache_entry(world, "Elden Ring")
+    assert entry["how"] == "pinned" and "stale_art" not in entry
+
+    settled = snapshot(world)
+    again = world.run(["sync"])
+    assert again.code == 0, again.err
+    assert again.calls == [] and again.runner.shutdowns == 0
+    assert snapshot(world) == settled
