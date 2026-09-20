@@ -469,7 +469,9 @@ def test_match_immediate_path_await_exit_waits_then_resets_the_art(world, tmp_pa
         runner=runner,
     )
     assert result.code == 0, result.err
-    assert event_names(result) == ["start", "awaiting-steam-exit", "pinned"]
+    assert event_names(result) == ["start", "awaiting-steam-exit", "commit", "pinned"]
+    commit = one(result, "commit")
+    assert commit["written"] is True and commit["restarted"] is False
     assert shortcut(world, "Elden Ring").icon == ""
     assert grid_files_of(world, elden.appid) == []
     assert runner.shutdowns == 0 and runner.spawned == []
