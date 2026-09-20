@@ -517,6 +517,128 @@ def test_art_force_clears_stale_art_too(world, tmp_path, monkeypatch):
     assert "stale_art" not in cache_entry(world, "Hollow Knight")
 
 
+def test_a_plain_sync_acts_on_a_deferred_pin_too(world, tmp_path, monkeypatch):
+    """Spec 3.4.4 (consequences for PR-3): ``build_plan`` reads ``stale_art``
+    whether or not ``--owned-apps`` resolved the titles ahead of it, so a
+    plain ``sync`` after ``match --defer-art`` replaces the entry
+    (``rematched``, same appid), deletes the old grid files, fetches the
+    pinned match's art -- no search, the pin answers -- and clears the
+    flag once that art phase has run."""
+    host_publishes(tmp_path, monkeypatch, ["Hollow Knight"])
+    assert world.run(["sync"]).code == 0
+    hollow = entry(world, "Hollow Knight")
+    assert grid_of(world, hollow.appid) == expected_grid_files(hollow.appid)
+    assert run_match(
+        world, ["match", "Hollow Knight", "--steam", str(HADES_STEAM), "--defer-art"]
+    ).code == 0
+    assert cache_entry(world, "Hollow Knight")["stale_art"] is True
+
+    result = world.run(["--json", "sync"])
+
+    assert result.code == 0, result.err
+    events = json_lines(result.out)
+    plan = next(e for e in events if e["event"] == "plan")
+    assert plan["to_replace"] == 1 and plan["present"] == 0 and plan["to_add"] == 0
+    replace = next(e for e in events if e["event"] == "replace")
+    assert replace["name"] == "Hollow Knight" and replace["reason"] == "rematched"
+    assert replace["old_appid"] == hollow.appid and replace["new_appid"] == hollow.appid
+    after = entry(world, "Hollow Knight")
+    assert after.appid == hollow.appid and after.is_hidden == 0
+    assert after.app_name == "Hollow Knight (streaming)"
+    assert grid_of(world, hollow.appid) == expected_grid_files(hollow.appid)
+    assert not any(url.startswith(AUTOCOMPLETE) for url in result.calls)
+    assert any(f"/apps/{HADES_STEAM}/" in url for url in result.calls)
+    assert not any(f"/apps/{HOLLOW_STEAM}/" in url for url in result.calls)
+    hollow_line = next(line for line in result.err.splitlines() if "] Hollow Knight:" in line)
+    assert hollow_line.endswith(
+        "portrait=official landscape=official hero=official logo=official icon=official"
+    )
+    summary = next(e for e in events if e["event"] == "summary")
+    assert summary["replaced"] == 1 and summary["added"] == 0
+    cached = cache_entry(world, "Hollow Knight")
+    assert cached["how"] == "pinned" and "stale_art" not in cached
+    assert result.runner.shutdowns == 1
+    # And the usual second run: every slot filled, zero calls, no restart.
+    again = world.run(["sync"])
+    assert again.code == 0, again.err
+    assert again.calls == [] and again.runner.shutdowns == 0
+    assert "stale_art" not in cache_entry(world, "Hollow Knight")
+
+
+def test_a_plain_sync_acts_on_the_unpinned_placeholder(world, tmp_path, monkeypatch):
+    """The ``how: "unpinned"`` placeholder ``--unpin --defer-art`` leaves is
+    a cache miss for the resolver and, whatever its ``how``, a ``rematched``
+    replacement for the plan (spec 3.4.4): a plain ``sync`` re-searches,
+    deletes the pin's art, fetches the fresh match's and clears the flag."""
+    host_publishes(tmp_path, monkeypatch, ["Elden Ring"])
+    assert world.run(["sync"]).code == 0
+    elden = entry(world, "Elden Ring")
+    assert run_match(
+        world, ["match", "Elden Ring", "--steam", str(HOLLOW_STEAM), "--defer-art"]
+    ).code == 0
+    assert run_match(world, ["match", "Elden Ring", "--unpin", "--defer-art"]).code == 0
+    placeholder = cache_entry(world, "Elden Ring")
+    assert placeholder["how"] == "unpinned" and placeholder["stale_art"] is True
+
+    result = world.run(["sync"])
+
+    assert result.code == 0, result.err
+    assert (
+        "replace  Elden Ring: Elden Ring (streaming) [visible] -> "
+        "Elden Ring (streaming) [visible] (rematched)"
+    ) in result.out
+    assert f"{AUTOCOMPLETE}Elden%20Ring" in result.calls
+    assert any(f"/apps/{ELDEN_STEAM}/" in url for url in result.calls)
+    assert not any(f"/apps/{HOLLOW_STEAM}/" in url for url in result.calls)
+    assert entry(world, "Elden Ring").appid == elden.appid
+    assert grid_of(world, elden.appid) == expected_grid_files(elden.appid)
+    cached = cache_entry(world, "Elden Ring")
+    assert cached["how"] == "sgdb:exact-verified" and cached["steam_appid"] == ELDEN_STEAM
+    assert "stale_art" not in cached
+
+
+def test_a_plain_no_art_sync_deletes_stale_art_but_keeps_the_flag(
+    world, tmp_path, monkeypatch
+):
+    """Same rule as under ``--owned-apps``: ``--no-art`` deletes the stale
+    files (the flag asked for that) but fetches nothing, so the flag stays
+    for the run that does; no lookups either way."""
+    host_publishes(tmp_path, monkeypatch, ["Hollow Knight"])
+    assert world.run(["sync"]).code == 0
+    hollow = entry(world, "Hollow Knight")
+    assert run_match(
+        world, ["match", "Hollow Knight", "--steam", str(HADES_STEAM), "--defer-art"]
+    ).code == 0
+
+    result = world.run(["sync", "--no-art"])
+
+    assert result.code == 0, result.err
+    assert result.calls == []
+    assert "1 to replace" in result.out
+    assert grid_of(world, hollow.appid) == []
+    assert entry(world, "Hollow Knight").icon == ""
+    assert cache_entry(world, "Hollow Knight")["stale_art"] is True
+
+    dressed = world.run(["sync"])
+    assert dressed.code == 0, dressed.err
+    assert grid_of(world, hollow.appid) == expected_grid_files(hollow.appid)
+    assert "stale_art" not in cache_entry(world, "Hollow Knight")
+
+
+def test_a_plain_sync_reads_the_cache_without_writing_it(world, tmp_path, monkeypatch):
+    """Spec 3.11: the plan's cache read is a read. With no flagged entry a
+    plain ``sync`` over a finished library leaves ``matches.json`` and
+    ``shortcuts.vdf`` byte-identical and makes zero calls."""
+    host_publishes(tmp_path, monkeypatch, ["Elden Ring", "Hollow Knight"])
+    assert world.run(["sync"]).code == 0
+    vdf, cache, grid, backups = snapshot(world)
+
+    result = world.run(["sync"])
+
+    assert result.code == 0, result.err
+    assert result.calls == [] and result.runner.shutdowns == 0
+    assert snapshot(world) == (vdf, cache, grid, backups)
+
 
 # ---------------------------------------------------------------------------
 # duplicates (spec 3.3, decision 14)

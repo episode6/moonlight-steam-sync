@@ -505,11 +505,12 @@ def build_plan(
     ones are ``duplicate`` (no entry; an existing one is removed with its
     art); everything else is ``shortcut``. A title whose match carries
     ``stale_art`` (``match --defer-art``, 3.4.4) becomes a ``rematched``
-    replacement whatever its name, so its art is re-fetched. Without
-    ``owned`` -- and so without ``matches``, which only ``sync
-    --owned-apps`` resolves ahead of the plan (3.4.2) and ``list
-    --owned-apps`` reads from the cache -- every kind is ``shortcut`` and
-    the plan is v0.2.0's.
+    replacement whatever its name and whatever its ``how`` (the ``unpinned``
+    placeholder included), so its art is re-fetched -- with or without
+    ``owned``: ``sync --owned-apps`` resolves ``matches`` ahead of the plan
+    (3.4.2), a plain ``sync`` and ``list --owned-apps`` read them from the
+    cache. Without ``owned`` every kind is ``shortcut`` and, with no flagged
+    entry, the plan is v0.2.0's.
 
     Per published name, an existing entry whose ``AppName`` is not the one
     its kind wants is a :class:`Replacement` (``kind-changed`` /
@@ -1249,13 +1250,13 @@ def cmd_sync(
                 "no SteamGridDB API key configured; using Steam's store search and CDN only"
             )
 
-    matches: dict[str, Match] | None = None
+    ignore = set(config.ignore) | set(ignore_extra)
+    names = [name for name in dict.fromkeys(app.name for app in apps) if name not in ignore]
+    matches: dict[str, Match | None]
     if owned is not None:
         assert services is not None
-        ignore = set(config.ignore) | set(ignore_extra)
-        names = [name for name in dict.fromkeys(app.name for app in apps) if name not in ignore]
         try:
-            matches = resolve_titles(names, services.resolver, out=art_out)
+            matches = dict(resolve_titles(names, services.resolver, out=art_out))
         except HardStop as exc:
             # Before the plan exists there is no `summary` to owe (spec
             # 3.4.6); the cache holds every title resolved so far.
@@ -1265,6 +1266,19 @@ def cmd_sync(
             services.cache.flush()
             reporter.error(RESUME_HINT, EXIT_SIGINT)
             return EXIT_SIGINT
+    else:
+        # No resolution ahead of the plan, but the plan still reads each
+        # title's cache entry: a `stale_art` flag (`match --defer-art`,
+        # decky spec 3.4.4) is a `rematched` replacement in a plain sync
+        # too, whatever the entry's `how` -- the placeholder `--unpin`
+        # leaves included. A cache read only, no lookups, no HTTP; with no
+        # flagged entry the plan is v0.2.0's (3.11).
+        cache = (
+            services.cache
+            if services is not None
+            else MatchCache(deps.cache_path or default_cache_path())
+        )
+        matches = {name: cache.get(name) for name in names}
 
     plan = build_plan(
         config,

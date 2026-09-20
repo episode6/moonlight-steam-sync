@@ -380,12 +380,11 @@ match, so `match` deletes its five grid files and clears its icon, with the
 same one-restart write as `remove` (exit `2`, with nothing changed at all,
 when Steam is running and `restart_steam = false`); the next `sync` fetches
 the new match's art. `--defer-art` leaves the files and Steam alone and
-only marks the title's art as stale in the cache: the next `sync
---owned-apps` (the plugin's every run) treats that as a *rematched*
-replacement -- the old grid files are deleted and the new match's art
-fetched in the normal single-restart flow -- and `art --force` clears the
-mark too, having refilled every slot; a plain `sync` without
-`--owned-apps` keeps the art on disk. The mark outlives the entry it was
+only marks the title's art as stale in the cache: the next `sync` (plain
+or `--owned-apps`; the plan reads the cache either way) treats that as a
+*rematched* replacement -- the old grid files are deleted and the new
+match's art fetched in the normal single-restart flow -- and `art --force`
+clears the mark too, having refilled every slot. The mark outlives the entry it was
 set on, so `--unpin --defer-art` (which leaves an `"how": "unpinned"`
 placeholder in the cache) and the re-resolution that follows still end
 with the art marked stale. The name must be one the host publishes (as

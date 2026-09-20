@@ -220,7 +220,7 @@ def build_parser() -> argparse.ArgumentParser:
             "which you can paste into config.toml to make the pin permanent (this tool "
             "never writes it). When the title has a shortcut, its grid files are deleted "
             "and its icon cleared now (one Steam restart, like `remove`) unless "
-            "--defer-art leaves that to the next `sync --owned-apps` (or `art --force`)."
+            "--defer-art leaves that to the next `sync` (or `art --force`)."
         ),
     )
     match_p.add_argument("name", metavar="NAME", help="the Moonlight app name, exactly")
@@ -243,8 +243,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--defer-art",
         action="store_true",
         help=(
-            "only write the cache (marking the art stale); the next `sync --owned-apps` "
-            "(or `art --force`) replaces the art, so Steam is not restarted now"
+            "only write the cache (marking the art stale); the next `sync` (or "
+            "`art --force`) replaces the art, so Steam is not restarted now"
         ),
     )
     match_p.add_argument(

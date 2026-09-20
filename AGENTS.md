@@ -173,11 +173,12 @@ independent PRs can land in parallel.
   `ignore --all` write beside `matches.json`; and `list`'s `same-game-as`
   line, which needs a second host's cache file to exist at all. The
   frozen `tests/test_sync_e2e.py` is the proof. Concretely: no title is
-  resolved ahead of the plan and `build_plan` gets no `matches` unless
-  `--owned-apps` is passed (`list --owned-apps` reads them from the
-  cache, never resolving), so a `stale_art` entry is acted on by `sync
-  --owned-apps` and `art --force` only; every new human line is printed
-  only when the plan holds the change it describes;
+  resolved ahead of the plan unless `--owned-apps` is passed, but
+  `build_plan` always gets `matches` -- a plain `sync` and `list
+  --owned-apps` read them from the cache (a read, never a write or a
+  lookup) -- so a `stale_art` entry is a `rematched` replacement in every
+  `sync`, whatever the entry's `how` (decky spec 3.4.4); every new human
+  line is printed only when the plan holds the change it describes;
   `IsHidden` is only ever flipped by `--owned-apps` (a visible `stream`
   entry is re-hidden, `Plan.to_hide`) or `--park-unpublished` (parking
   and unparking); and `list` labels a hidden entry `parked`, and a
@@ -356,10 +357,10 @@ every title (`tests/test_art_apply.py`).
   cache with no pinned or stale entry is byte-identical to one written
   before pins existed. `match`'s immediate path (delete the title's grid
   files, clear its `icon`) goes through `sync.commit_shortcuts()` like
-  `remove`; `--defer-art` only marks the entry `stale_art`, which `sync
-  --owned-apps` acts on as a `rematched` replacement (decky spec 3.4.2)
-  and `art --force` clears (it refilled every slot); a plain `sync` keeps
-  the art on disk, since it resolves nothing ahead of the plan.
+  `remove`; `--defer-art` only marks the entry `stale_art`, which the
+  next `sync` -- plain or `--owned-apps`; the plan reads the cache either
+  way -- acts on as a `rematched` replacement (decky spec 3.4.2, 3.4.4)
+  and `art --force` clears (it refilled every slot).
 - **`stale_art` belongs to the grid files, not to the match.** It says
   "the art on disk came from an earlier match", so `MatchCache.put()`
   carries it forward onto whatever resolution replaces a flagged entry;
