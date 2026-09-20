@@ -176,7 +176,7 @@ moonlight-steam-sync [--json] match     "Name" (--steam APPID | --sgdb ID | --no
                                         [--commit MODE]
 moonlight-steam-sync [--json] host      show [--host H] | set NAME | clear
 moonlight-steam-sync [--json] ignore    --all | "Name"... [--ignore-file PATH]
-moonlight-steam-sync [--json] remove    (--all | "Name"...) [--client] | --client [--commit MODE]
+moonlight-steam-sync [--json] remove    ((--all | "Name"...) [--client] | --client) [--commit MODE]
 moonlight-steam-sync [--json] launch    [--host H] "Name" [-- extra moonlight flags]
 moonlight-steam-sync [--json] client    [-- extra moonlight flags]
 moonlight-steam-sync [--json] doctor    [--host H] [--owned-apps PATH] [--ignore-file PATH] [--client-shortcut]

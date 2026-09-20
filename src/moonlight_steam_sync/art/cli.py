@@ -273,10 +273,11 @@ def cmd_art(
         # Reachable only through the interruptible `--commit await-exit`
         # wait (decky spec 3.13 A2): the write itself defers SIGINT, so
         # the file is untouched and the next run only writes.
-        reporter.event("summary", **_art_summary_event_fields(summary, EXIT_SIGINT))
-        reporter.error(
-            "interrupted while writing shortcuts.vdf; rerun the same command", EXIT_SIGINT
+        reporter.event(
+            "summary",
+            **_art_summary_event_fields(summary, EXIT_SIGINT, stop_reason="interrupted"),
         )
+        reporter.error("interrupted; resume with the same command", EXIT_SIGINT)
         return EXIT_SIGINT
     if summary.written and not _restarted(provider):
         print("restart Steam to see the new artwork", file=err)
@@ -320,11 +321,21 @@ def _commit_event_fields(provider: TargetProvider) -> dict[str, Any]:
     }
 
 
-def _art_summary_event_fields(summary: RunSummary, exit_code: int) -> dict[str, Any]:
+def _art_summary_event_fields(
+    summary: RunSummary, exit_code: int, *, stop_reason: str | None = None
+) -> dict[str, Any]:
     """``art``'s ``summary`` event (spec 3.4.6): the key set ``sync`` uses
     minus ``added_by_kind`` (a ``sync``-only key, decky spec 3.13 A3), with
     ``added``/``replaced``/``removed`` always 0 -- ``art`` never adds,
-    replaces or removes a shortcut."""
+    replaces or removes a shortcut. ``stop_reason`` overrides the summary's
+    own: a Ctrl-C during the ``--commit await-exit`` wait ends a run whose
+    art phase *completed*, and the event still has to say
+    ``"interrupted"`` (spec 3.4.6, decky spec 3.13 A2) while keeping the
+    real ``filled``/``missing``/``unmatched`` counts."""
+    if stop_reason is None:
+        stopped_early, resolved_stop_reason = summary.stopped_early, summary.stop_reason or None
+    else:
+        stopped_early, resolved_stop_reason = True, stop_reason
     return {
         "added": 0,
         "replaced": 0,
@@ -334,8 +345,8 @@ def _art_summary_event_fields(summary: RunSummary, exit_code: int) -> dict[str, 
         "unmatched": summary.unmatched,
         "duplicates": {},
         "pending": 0,
-        "stopped_early": summary.stopped_early,
-        "stop_reason": summary.stop_reason or None,
+        "stopped_early": stopped_early,
+        "stop_reason": resolved_stop_reason,
         "exit": exit_code,
     }
 

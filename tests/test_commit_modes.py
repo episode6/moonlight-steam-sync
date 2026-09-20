@@ -445,7 +445,13 @@ def test_remove_await_exit_interrupted_is_130_with_nothing_removed(world, tmp_pa
     )
     assert result.code == 130
     assert event_names(result) == ["start", "awaiting-steam-exit", "summary", "error"]
-    assert one(result, "summary")["removed"] == 0
+    summary = one(result, "summary")
+    assert summary["removed"] == 0
+    # The general Ctrl-C rule (spec 3.4.6, decky spec 3.13 A2) holds for the
+    # await-exit wait too: an interrupted run says so in its summary.
+    assert summary["stopped_early"] is True
+    assert summary["stop_reason"] == "interrupted"
+    assert summary["exit"] == 130
     assert one(result, "error")["exit"] == 130
     assert world.shortcuts_path.read_bytes() == before
     assert len(grid_files_of(world, elden.appid)) == 5
@@ -550,7 +556,17 @@ def test_art_await_exit_timeout_and_interrupt_leave_the_file_untouched(world, mo
     )
     assert result.code == 130
     assert event_names(result) == ["start", "title", "awaiting-steam-exit", "summary", "error"]
-    assert one(result, "summary")["exit"] == 130
+    summary = one(result, "summary")
+    # The art phase completed (all five slots filled) but the run was
+    # interrupted during the wait, and the summary says so (spec 3.4.6,
+    # decky spec 3.13 A2) while keeping the real art counts.
+    assert summary["exit"] == 130
+    assert summary["stopped_early"] is True
+    assert summary["stop_reason"] == "interrupted"
+    assert summary["filled"] == 5
+    # Ctrl-C lands during the wait, never during the write: the error text
+    # says what was interrupted and matches the other commands' hint.
+    assert one(result, "error")["message"] == "interrupted; resume with the same command"
     assert world.shortcuts_path.read_bytes() == before
 
 

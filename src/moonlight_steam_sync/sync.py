@@ -1307,11 +1307,15 @@ def _title_event_fields(index: int, total: int, result: Any) -> dict[str, Any]:
     }
 
 
-def _remove_summary_event_fields(removed: int, exit_code: int) -> dict[str, Any]:
+def _remove_summary_event_fields(
+    removed: int, exit_code: int, *, stop_reason: str | None = None
+) -> dict[str, Any]:
     """``remove``'s ``summary`` (spec 3.4.6): ``sync``'s key set minus
     ``added_by_kind`` (a ``sync``-only key, decky spec 3.13 A3), with only
     ``removed`` ever non-zero -- ``remove`` has no art phase or plan of its
-    own."""
+    own. ``stop_reason`` is set the way :func:`_summary_event_fields` sets
+    it: ``"interrupted"`` when a Ctrl-C during the ``--commit await-exit``
+    wait ended the run (spec 3.4.6, decky spec 3.13 A2), else ``None``."""
     return {
         "added": 0,
         "replaced": 0,
@@ -1321,8 +1325,8 @@ def _remove_summary_event_fields(removed: int, exit_code: int) -> dict[str, Any]
         "unmatched": [],
         "duplicates": {},
         "pending": 0,
-        "stopped_early": False,
-        "stop_reason": None,
+        "stopped_early": stop_reason is not None,
+        "stop_reason": stop_reason,
         "exit": exit_code,
     }
 
@@ -2106,7 +2110,10 @@ def cmd_remove(
     except KeyboardInterrupt:
         # The await-exit wait is interruptible (decky spec 3.13 A2): nothing
         # was written and no grid file touched.
-        reporter.event("summary", **_remove_summary_event_fields(0, EXIT_SIGINT))
+        reporter.event(
+            "summary",
+            **_remove_summary_event_fields(0, EXIT_SIGINT, stop_reason="interrupted"),
+        )
         reporter.error(RESUME_HINT, EXIT_SIGINT)
         return EXIT_SIGINT
 
