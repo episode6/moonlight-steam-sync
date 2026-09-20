@@ -6,7 +6,41 @@ project uses [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
-Nothing yet.
+The first slice of the Decky-plugin CLI work
+(`~/specs/moonlight-steam-sync/decky-plugin.md`, PR-1): additive and
+optional, so every command's behaviour is unchanged when none of the flags
+below are passed.
+
+### Added
+
+- `--json` (before the subcommand): switches stdout to one JSON object per
+  line, moving human progress to stderr. See the README's "Machine-readable
+  output" section for the event schema.
+- `search "term"`: looks a title up against SteamGridDB and Steam's store
+  the same way `sync`'s art phase does, and prints the candidates without
+  writing anything.
+- `host show|set|clear`: an active-host state file, so `launch`, `sync`,
+  `list`, `ignore`, `status` and `doctor` can target a host other than the
+  one in `config.toml` without editing it.
+- `list --cached` and `status --host`: read the new per-host `moonlight
+  list` cache (written automatically by `sync`, `list` and `ignore --all`
+  on every successful run) instead of asking the host live.
+- `list` reports `same-game-as: <name> (<host>)` when a second host's cache
+  shows the same title published under a different name.
+- `status --owned-apps PATH`: accepted and validated (a later release uses
+  it to mark owned titles); no output changes yet.
+- `doctor` gains `session:`, `active host:` and `cached hosts:` lines, plus
+  an `owned-apps file:` line when `--owned-apps` is passed.
+
+### Fixed
+
+- `--json launch`: `start` and `exec` are now flushed before `moonlight
+  stream` replaces the process, so a reader on the other end of a pipe (as
+  the Decky plugin uses) actually sees them; a missing `moonlight` binary
+  now yields `start`, `error` rather than `start`, `exec`, `error`.
+- `sync --json`'s `summary` event: `stopped_early` now always agrees with
+  `stop_reason` (both null, or both set), including on the `--dry-run`
+  hard-stop and `Ctrl-C` paths.
 
 ## [0.2.0] - 2026-09-18
 

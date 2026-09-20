@@ -35,17 +35,21 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import itertools
 import json
 import signal
 import sys
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TextIO
+from typing import Any, TextIO
 
-from moonlight_steam_sync import moonlight, steam
+from moonlight_steam_sync import hosts, moonlight, steam
+from moonlight_steam_sync import version as _pkg_version
+from moonlight_steam_sync.art import resolve as art_resolve
 from moonlight_steam_sync.art.apply import (
     ArtTarget,
+    CommitResult,
     RunSummary,
     SteamShortcutProvider,
     patch_icon,
@@ -53,9 +57,10 @@ from moonlight_steam_sync.art.apply import (
 )
 from moonlight_steam_sync.art.cli import ArtServices, build_services
 from moonlight_steam_sync.art.http import HardStop
-from moonlight_steam_sync.art.resolve import Resolver
+from moonlight_steam_sync.art.resolve import MatchCache, Resolver, default_cache_path
 from moonlight_steam_sync.art.select import SLOTS, Selector, existing_slot_file
 from moonlight_steam_sync.config import Config
+from moonlight_steam_sync.reporting import Reporter, match_json, slot_json_value
 from moonlight_steam_sync.shortcuts import (
     Shortcut,
     ShortcutsError,
@@ -103,6 +108,16 @@ class Deps:
     runner: ProcessRunner = field(default_factory=ProcessRunner)
     services: ArtServices | None = None
     cache_path: Path | None = None
+    #: Overrides where the per-host list cache lives (spec 3.4.8); follows
+    #: ``cache_path`` when unset, so ``World.run`` (which sets ``cache_path``
+    #: but never ``$XDG_CACHE_HOME``) never touches a developer's real cache.
+    hosts_dir: Path | None = None
+
+    def resolved_hosts_dir(self) -> Path:
+        if self.hosts_dir is not None:
+            return self.hosts_dir
+        base = self.cache_path.parent if self.cache_path is not None else art_resolve.cache_dir()
+        return base / "hosts"
 
 
 # ---------------------------------------------------------------------------
@@ -133,36 +148,49 @@ def open_library() -> Library:
     return Library(user=user, file=ShortcutsFile.read(user.shortcuts_path))
 
 
-def _open_library_or_report(command: str, err: TextIO) -> Library | None:
+def _open_library_or_report(command: str, reporter: Reporter) -> Library | None:
     try:
         return open_library()
     except steam.SteamError as exc:
-        print(f"{command}: {exc}", file=err)
+        reporter.error(f"{command}: {exc}", EXIT_USAGE_OR_CONFIG)
     except ShortcutsError as exc:
-        print(f"{command}: {exc}", file=err)
-        print(f"{command}: nothing was touched", file=err)
+        reporter.error(f"{command}: {exc}", EXIT_USAGE_OR_CONFIG)
+        print(f"{command}: nothing was touched", file=reporter.err)
     return None
 
 
 def _list_host_or_report(
-    command: str, config: Config, deps: Deps, err: TextIO
+    command: str, config: Config, deps: Deps, reporter: Reporter
 ) -> list[moonlight.App] | None:
+    """Run ``moonlight list``, and on success refresh the per-host cache
+    (spec 3.4.6/3.12) -- every caller (``sync``, ``list``, ``ignore --all``)
+    shares this one helper, so all three refresh it with no new flag."""
     try:
-        return deps.list_apps(config.host)
+        apps = deps.list_apps(config.host)
     except (
         moonlight.MoonlightNotFoundError,
         moonlight.MoonlightUnreachableError,
     ) as exc:
-        print(f"{command}: {exc}", file=err)
+        reporter.error(f"{command}: {exc}", EXIT_MOONLIGHT_UNREACHABLE)
         return None
+    try:
+        hosts.write_host_cache(deps.resolved_hosts_dir(), config.host, [a.name for a in apps])
+    except OSError as exc:
+        # Best-effort (spec 3.11/3.12): an unwritable cache dir must not turn
+        # an otherwise-successful list into a failed command.
+        # v0.2.0 never printed anything for this (spec 3.11): the cache
+        # write is new in this PR, so its failure note is --json-only,
+        # like the other notes new in this PR.
+        reporter.note(f"could not write host list cache: {exc}", only_json=True)
+    return apps
 
 
-def _need_host(command: str, config: Config, err: TextIO) -> bool:
+def _need_host(command: str, config: Config, reporter: Reporter) -> bool:
     if config.host:
         return True
-    print(
+    reporter.error(
         f"{command}: no host configured; pass --host or set `host` in {config.config_path}",
-        file=err,
+        EXIT_USAGE_OR_CONFIG,
     )
     return False
 
@@ -478,8 +506,14 @@ def steam_aware_provider(
 ) -> SteamShortcutProvider:
     """The ``art`` command's provider: commits through :func:`commit_shortcuts`."""
 
-    def write(shortcuts_file: ShortcutsFile) -> bool:
-        return commit_shortcuts(shortcuts_file, config=config, runner=runner).restarted
+    def write(shortcuts_file: ShortcutsFile) -> CommitResult:
+        commit = commit_shortcuts(shortcuts_file, config=config, runner=runner)
+        return CommitResult(
+            written=commit.written,
+            restarted=commit.restarted,
+            backup=commit.backup,
+            relaunch_error=commit.relaunch_error,
+        )
 
     return SteamShortcutProvider(config, writer=write)
 
@@ -506,6 +540,106 @@ class SyncOptions:
         )
 
 
+def _plan_event_fields(plan: Plan) -> dict[str, Any]:
+    """``plan`` event fields (spec 3.4.6). PR-1 has no replace/park/duplicate
+    machinery yet, so those counts are all zero and every kind is
+    ``"shortcut"``."""
+    return {
+        "host": plan.host,
+        "published": len(plan.apps),
+        "ignored": len(plan.ignored),
+        "present": len(plan.present),
+        "to_add": len(plan.to_add),
+        "to_replace": 0,
+        "to_park": 0,
+        "to_unpark": 0,
+        "to_remove": 0,
+        "pending": len(plan.pending),
+        "limit": plan.limit,
+        "stream": 0,
+        "shortcut": len(plan.apps) - len(plan.ignored),
+        "parked": 0,
+        "duplicates": {},
+    }
+
+
+def _summary_event_fields(
+    plan: Plan,
+    summary: RunSummary | None,
+    commit: Commit | None,
+    *,
+    exit_code: int,
+    stop_reason: str | None = None,
+) -> dict[str, Any]:
+    added = len(plan.to_add) if commit is not None and commit.written else 0
+    resolved_stop_reason = stop_reason if stop_reason is not None else (
+        summary.stop_reason if summary and summary.stopped_early else None
+    )
+    return {
+        "added": added,
+        "replaced": 0,
+        "removed": 0,
+        "filled": summary.filled if summary is not None else 0,
+        "missing": summary.missing if summary is not None else 0,
+        "unmatched": summary.unmatched if summary is not None else [],
+        "duplicates": {},
+        "pending": len(plan.pending),
+        "stopped_early": resolved_stop_reason is not None,
+        "stop_reason": resolved_stop_reason,
+        "exit": exit_code,
+    }
+
+
+def _title_event_fields(index: int, total: int, result: Any) -> dict[str, Any]:
+    if result.skipped:
+        return {
+            "index": index,
+            "total": total,
+            "name": result.target.name,
+            "kind": "shortcut",
+            "appid": result.target.appid,
+            "match": None,
+            "slots": {},
+        }
+    return {
+        "index": index,
+        "total": total,
+        "name": result.target.name,
+        "kind": "shortcut",
+        "appid": result.target.appid,
+        "match": match_json(result.match),
+        "slots": {key: slot_json_value(outcome.source) for key, outcome in result.slots.items()},
+    }
+
+
+def _remove_summary_event_fields(removed: int, exit_code: int) -> dict[str, Any]:
+    """``remove``'s ``summary`` (spec 3.4.6): same key set as ``sync``'s,
+    with only ``removed`` ever non-zero -- ``remove`` has no art phase or
+    plan of its own."""
+    return {
+        "added": 0,
+        "replaced": 0,
+        "removed": removed,
+        "filled": 0,
+        "missing": 0,
+        "unmatched": [],
+        "duplicates": {},
+        "pending": 0,
+        "stopped_early": False,
+        "stop_reason": None,
+        "exit": exit_code,
+    }
+
+
+def _commit_event_fields(commit: Commit) -> dict[str, Any]:
+    return {
+        "written": bool(commit.written),
+        "restarted": bool(commit.restarted),
+        "backup": commit.backup.name if commit.backup is not None else None,
+        "relaunch_error": commit.relaunch_error,
+    }
+
+
 def cmd_sync(
     args: argparse.Namespace,
     config: Config,
@@ -518,22 +652,27 @@ def cmd_sync(
     deps = deps or Deps()
     out = out or sys.stdout
     err = err or sys.stderr
+    reporter = Reporter(
+        out, err, json=bool(getattr(args, "json", False)), command="sync", version=_pkg_version()
+    )
+    reporter.start()
     options = SyncOptions.from_args(args)
     if options.limit is not None and options.limit < 0:
-        print("sync: --limit must be zero or more", file=err)
+        reporter.error("sync: --limit must be zero or more", EXIT_USAGE_OR_CONFIG)
         return EXIT_USAGE_OR_CONFIG
 
-    if not _need_host("sync", config, err):
+    if not _need_host("sync", config, reporter):
         return EXIT_USAGE_OR_CONFIG
-    library = _open_library_or_report("sync", err)
+    library = _open_library_or_report("sync", reporter)
     if library is None:
         return EXIT_USAGE_OR_CONFIG
-    apps = _list_host_or_report("sync", config, deps, err)
+    apps = _list_host_or_report("sync", config, deps, reporter)
     if apps is None:
         return EXIT_MOONLIGHT_UNREACHABLE
 
     plan = build_plan(config, apps, library.file, limit=options.limit)
-    print(plan.header(), file=out)
+    reporter.line(plan.header())
+    reporter.plan(**_plan_event_fields(plan))
 
     services: ArtServices | None = None
     if not options.no_art:
@@ -543,20 +682,24 @@ def cmd_sync(
         services.resolver.force = False
         services.resolver.retry_missing = options.retry_missing
         if not config.sgdb_api_key:
-            print(
-                "note: no SteamGridDB API key configured; using Steam's store search and "
-                "CDN only",
-                file=err,
+            reporter.note(
+                "no SteamGridDB API key configured; using Steam's store search and CDN only"
             )
 
     try:
         if options.dry_run:
-            return _dry_run(plan, library, services, out)
-        return _sync(plan, library, config, options, services, deps, out, err)
+            return _dry_run(plan, library, services, reporter)
+        return _sync(plan, library, config, options, services, deps, reporter)
     except KeyboardInterrupt:
         if services is not None:
             services.cache.flush()
-        print(RESUME_HINT, file=err)
+        reporter.event(
+            "summary",
+            **_summary_event_fields(
+                plan, None, None, exit_code=EXIT_SIGINT, stop_reason="interrupted"
+            ),
+        )
+        reporter.error(RESUME_HINT, EXIT_SIGINT)
         return EXIT_SIGINT
 
 
@@ -567,11 +710,12 @@ def _sync(
     options: SyncOptions,
     services: ArtServices | None,
     deps: Deps,
-    out: TextIO,
-    err: TextIO,
+    reporter: Reporter,
 ) -> int:
+    art_out = reporter.err if reporter.json else reporter.out
     if not plan.to_add and not plan.adopted:
-        print("nothing to do", file=out)
+        reporter.line("nothing to do")
+        reporter.event("summary", **_summary_event_fields(plan, None, None, exit_code=EXIT_OK))
         return EXIT_OK
 
     # In memory only: the file is not written until commit_shortcuts, and
@@ -581,6 +725,12 @@ def _sync(
         library.file.append(item.shortcut)
     targets = art_targets(plan, library.grid_dir)
 
+    title_counter = itertools.count(1)
+
+    def on_title(result: Any) -> None:
+        index = next(title_counter)
+        reporter.title(**_title_event_fields(index, len(targets), result))
+
     summary: RunSummary | None = None
     if services is not None:
         provider = LibraryProvider(library.file, targets)
@@ -589,17 +739,36 @@ def _sync(
             services.resolver,
             services.selector,
             provider=provider,
-            out=out,
+            out=art_out,
+            on_title=on_title if reporter.json else None,
         )
         for line in summary.lines():
-            print(line, file=out)
+            reporter.line(line)
         if summary.stopped_early:
             # Spec 3.9 items 1 and 4: everything durable is already on disk,
             # shortcuts.vdf is untouched, and the same command finishes the job.
-            if summary.stop_reason == "interrupted":
-                print(RESUME_HINT, file=err)
-                return EXIT_SIGINT
-            return EXIT_NETWORK_STOPPED
+            exit_code = (
+                EXIT_SIGINT if summary.stop_reason == "interrupted" else EXIT_NETWORK_STOPPED
+            )
+            reporter.event(
+                "summary",
+                **_summary_event_fields(
+                    plan,
+                    summary,
+                    None,
+                    exit_code=exit_code,
+                    stop_reason="interrupted" if exit_code == EXIT_SIGINT else summary.stop_reason,
+                ),
+            )
+            if exit_code == EXIT_SIGINT:
+                # Original behaviour always printed this to err, json or not.
+                reporter.error(RESUME_HINT, EXIT_SIGINT)
+            else:
+                # Original behaviour printed nothing extra to err here (the
+                # stop reason is already on `out`/`err` via summary.lines());
+                # only add the --json error event, never a new err line.
+                reporter.event("error", exit=EXIT_NETWORK_STOPPED, message=summary.stop_reason)
+            return exit_code
     # The field follows the file whoever wrote it (spec 3.6); with --no-art
     # this is the only icon patching there is.
     patch_icons_from_disk(library.file, targets)
@@ -609,16 +778,28 @@ def _sync(
             library.file,
             config=config,
             runner=deps.runner,
-            out=out,
+            out=art_out,
             art_written=bool(summary and summary.written),
         )
     except SteamRunningError as exc:
-        print(f"sync: {exc}", file=err)
+        reporter.event(
+            "summary",
+            **_summary_event_fields(plan, summary, None, exit_code=EXIT_STEAM_RUNNING),
+        )
+        reporter.error(f"sync: {exc}", EXIT_STEAM_RUNNING)
         return EXIT_STEAM_RUNNING
 
-    print(commit.describe(library.user.shortcuts_path), file=out)
+    reporter.line(commit.describe(library.user.shortcuts_path))
+    reporter.event("commit", **_commit_event_fields(commit))
     for line in _final_summary(plan, summary, commit):
-        print(line, file=out)
+        reporter.line(line)
+        if line == "restart Steam to see the new artwork" or line.endswith(
+            "rerun to add the next batch"
+        ):
+            # Spec 3.4.6: these two human lines are additionally emitted as
+            # `note` events under --json, on top of the plain `line` above.
+            reporter.event("note", message=line)
+    reporter.event("summary", **_summary_event_fields(plan, summary, commit, exit_code=EXIT_OK))
     return EXIT_OK
 
 
@@ -645,58 +826,120 @@ def _final_summary(plan: Plan, summary: RunSummary | None, commit: Commit) -> li
 # -- dry run ---------------------------------------------------------------
 
 
-def _dry_run(plan: Plan, library: Library, services: ArtServices | None, out: TextIO) -> int:
+def _dry_run(plan: Plan, library: Library, services: ArtServices | None, reporter: Reporter) -> int:
     """Print the plan: shortcuts to add, and per-slot art source and URL.
 
     Touches nothing under Steam. With art enabled it does resolve each title
     (that is the only way to know a CDN URL), so the match cache is the one
     thing a dry run writes -- the real run then reuses every resolution.
+    Emits ``summary`` (exit 0, or 4 on a hard stop) and no ``title`` events
+    (spec 3.4.6): its per-slot lines are human-only, on ``err`` under
+    ``--json``.
     """
     resolver = services.resolver if services is not None else None
     selector = services.selector if services is not None else None
+
     def slot_plan(target: ArtTarget) -> None:
         if resolver is not None and selector is not None:
-            _print_slot_plan(target, resolver, selector, out)
+            _print_slot_plan(target, resolver, selector, reporter)
 
     try:
         for item in plan.adopted:
-            print(f"  adopted  {item.name} [{item.shortcut.appid}]", file=out)
+            reporter.line(f"  adopted  {item.name} [{item.shortcut.appid}]")
             slot_plan(ArtTarget(item.name, item.shortcut.appid, library.grid_dir))
         for item in plan.to_add:
-            print(f"  add      {item.app.name} [{item.shortcut.appid}]", file=out)
+            reporter.line(f"  add      {item.app.name} [{item.shortcut.appid}]")
             slot_plan(ArtTarget(item.app.name, item.shortcut.appid, library.grid_dir))
         for item in plan.pending:
-            print(f"  pending  {item.app.name} (beyond --limit {plan.limit})", file=out)
+            reporter.line(f"  pending  {item.app.name} (beyond --limit {plan.limit})")
         for app in plan.ignored:
-            print(f"  ignored  {app.name}", file=out)
+            reporter.line(f"  ignored  {app.name}")
     except HardStop as exc:
-        print(str(exc), file=out)
+        reporter.line(str(exc))
+        reporter.event(
+            "summary",
+            **_summary_event_fields(
+                plan, None, None, exit_code=EXIT_NETWORK_STOPPED, stop_reason=str(exc)
+            ),
+        )
+        # Original behaviour printed nothing to err here (the message is
+        # already on `out`/`err` via reporter.line above); only add the
+        # --json error event, never a new err line.
+        reporter.event("error", exit=EXIT_NETWORK_STOPPED, message=str(exc))
         return EXIT_NETWORK_STOPPED
-    print("dry run: nothing written", file=out)
+    reporter.line("dry run: nothing written")
+    reporter.event("summary", **_summary_event_fields(plan, None, None, exit_code=EXIT_OK))
     return EXIT_OK
 
 
 def _print_slot_plan(
-    target: ArtTarget, resolver: Resolver, selector: Selector, out: TextIO
+    target: ArtTarget, resolver: Resolver, selector: Selector, reporter: Reporter
 ) -> None:
     match = resolver.resolve(target.name)
     if match.skipped:
-        print("           art: skipped (overrides)", file=out)
+        reporter.line("           art: skipped (overrides)")
         return
-    print(f"           match: {match.how}", file=out)
+    reporter.line(f"           match: {match.how}")
     for slot in SLOTS:
         existing = existing_slot_file(target.grid_dir, target.appid, slot)
         if existing is not None:
-            print(f"           {slot.key}: kept {existing.name}", file=out)
+            reporter.line(f"           {slot.key}: kept {existing.name}")
             continue
         first = next(iter(selector.candidates(slot, match)), None)
         where = first.describe() if first is not None else "no source"
-        print(f"           {slot.key}: {where}", file=out)
+        reporter.line(f"           {slot.key}: {where}")
 
 
 # ---------------------------------------------------------------------------
 # list
 # ---------------------------------------------------------------------------
+
+
+def _other_hosts_apps(hosts_directory: Path, current_host: str) -> dict[str, list[str]]:
+    """Every *other* cached host's app names, keyed by host name (spec 3.12)."""
+    result: dict[str, list[str]] = {}
+    for info in hosts.list_cached_hosts(hosts_directory):
+        if info.name.casefold() == current_host.casefold():
+            continue
+        cache = hosts.read_host_cache(hosts_directory, info.name)
+        if cache is not None:
+            result[info.name] = cache.apps
+    return result
+
+
+def _same_game_as(
+    name: str, match_cache: MatchCache, other_hosts: dict[str, list[str]]
+) -> list[dict[str, str]]:
+    """``same-game-as`` pairs for *name* (spec 3.4.8, 3.12).
+
+    Two names are "the same game" when both resolved (``how`` not
+    ``none``/``skipped``) and share a non-null ``steam_appid``, or -- when
+    neither has one -- a non-null ``sgdb_id``. Identical spellings are never
+    reported (one shared entry); a name missing from ``matches.json`` is
+    skipped entirely, never resolved for this.
+    """
+    entry = match_cache.get(name)
+    if entry is None or entry.how in ("none", "skipped"):
+        return []
+    results: list[dict[str, str]] = []
+    for host_name, names in other_hosts.items():
+        for other_name in dict.fromkeys(names):
+            if other_name == name:
+                continue
+            other = match_cache.get(other_name)
+            if other is None or other.how in ("none", "skipped"):
+                continue
+            same = False
+            if entry.steam_appid is not None and entry.steam_appid == other.steam_appid or (
+                entry.steam_appid is None
+                and other.steam_appid is None
+                and entry.sgdb_id is not None
+                and entry.sgdb_id == other.sgdb_id
+            ):
+                same = True
+            if same:
+                results.append({"name": other_name, "host": host_name})
+    return results
 
 
 def cmd_list(
@@ -707,28 +950,77 @@ def cmd_list(
     out: TextIO | None = None,
     err: TextIO | None = None,
 ) -> int:
-    """``moonlight-steam-sync list``: the host's apps, annotated added / ignored / new."""
-    del args
+    """``moonlight-steam-sync list``: the host's apps, annotated added / ignored / new.
+
+    ``--cached`` (spec 3.4.6/3.12) never runs Moonlight: it serves the
+    per-host list cache and exits 3, the same code a failed live list gets,
+    when there is none for this host.
+    """
     deps = deps or Deps()
     out = out or sys.stdout
     err = err or sys.stderr
-    if not _need_host("list", config, err):
+    reporter = Reporter(
+        out, err, json=bool(getattr(args, "json", False)), command="list", version=_pkg_version()
+    )
+    reporter.start()
+    if not _need_host("list", config, reporter):
         return EXIT_USAGE_OR_CONFIG
-    library = _open_library_or_report("list", err)
+    library = _open_library_or_report("list", reporter)
     if library is None:
         return EXIT_USAGE_OR_CONFIG
-    apps = _list_host_or_report("list", config, deps, err)
-    if apps is None:
-        return EXIT_MOONLIGHT_UNREACHABLE
+
+    hosts_directory = deps.resolved_hosts_dir()
+    cached_mode = bool(getattr(args, "cached", False))
+    cached_when: str | None = None
+    if cached_mode:
+        cache = hosts.read_host_cache(hosts_directory, config.host)
+        if cache is None:
+            reporter.error(
+                f"list: no cached app list for host {config.host}; run "
+                f"`list --host {config.host}` while it is reachable",
+                EXIT_MOONLIGHT_UNREACHABLE,
+            )
+            return EXIT_MOONLIGHT_UNREACHABLE
+        apps = [moonlight.App(name=n) for n in cache.apps]
+        cached_when = cache.when
+    else:
+        apps = _list_host_or_report("list", config, deps, reporter)
+        if apps is None:
+            return EXIT_MOONLIGHT_UNREACHABLE
 
     plan = build_plan(config, apps, library.file)
+    match_cache = MatchCache(deps.cache_path or default_cache_path())
+    other_hosts = _other_hosts_apps(hosts_directory, config.host)
     seen: set[str] = set()
+    count = 0
     for app in plan.apps:
         if app.name in seen:
             continue
         seen.add(app.name)
-        print(f"{plan.label(app):8} {app.name}", file=out)
-    print(plan.header(), file=out)
+        label = plan.label(app)
+        kind = LABEL_IGNORED if label == LABEL_IGNORED else "shortcut"
+        entry = match_cache.get(app.name)
+        match = match_json(entry) if entry is not None else None
+        fuzzy = bool(entry and entry.how.endswith(":fuzzy"))
+        same = _same_game_as(app.name, match_cache, other_hosts)
+        reporter.line(f"{label:8} {app.name}")
+        for item in same:
+            reporter.line(f"         same-game-as: {item['name']} ({item['host']})")
+        reporter.event(
+            "app",
+            name=app.name,
+            label=label,
+            kind=kind,
+            match=match,
+            fuzzy=fuzzy,
+            duplicate_of=None,
+            same_game_as=same,
+            cached=cached_mode,
+            cached_when=cached_when,
+        )
+        count += 1
+    reporter.line(plan.header())
+    reporter.event("end", count=count, host=config.host)
     return EXIT_OK
 
 
@@ -762,20 +1054,25 @@ def cmd_ignore(
     The tool never writes ``config.toml`` (spec 6.7): the printed array is
     the current ``ignore`` list plus, for ``--all``, every host app that has
     no shortcut yet -- the "draw a line under everything on the PC" workflow
-    from spec 3.7.
+    from spec 3.7. Under ``--json`` the report moves to stderr and the
+    command emits ``start`` then ``end`` (spec 3.4.6).
     """
     deps = deps or Deps()
     out = out or sys.stdout
     err = err or sys.stderr
+    reporter = Reporter(
+        out, err, json=bool(getattr(args, "json", False)), command="ignore", version=_pkg_version()
+    )
+    reporter.start()
 
     names = list(config.ignore)
     if getattr(args, "all", False):
-        if not _need_host("ignore", config, err):
+        if not _need_host("ignore", config, reporter):
             return EXIT_USAGE_OR_CONFIG
-        library = _open_library_or_report("ignore", err)
+        library = _open_library_or_report("ignore", reporter)
         if library is None:
             return EXIT_USAGE_OR_CONFIG
-        apps = _list_host_or_report("ignore", config, deps, err)
+        apps = _list_host_or_report("ignore", config, deps, reporter)
         if apps is None:
             return EXIT_MOONLIGHT_UNREACHABLE
         plan = build_plan(config, apps, library.file)
@@ -784,12 +1081,14 @@ def cmd_ignore(
         names.extend(getattr(args, "names", []) or [])
 
     deduped = list(dict.fromkeys(names))
-    for line in ignore_lines(deduped):
-        print(line, file=out)
+    lines = ignore_lines(deduped)
+    for line in lines:
+        reporter.line(line)
     print(
         f"paste the block above into {config.config_path} (this tool never writes it)",
         file=err,
     )
+    reporter.event("end", count=len(lines))
     return EXIT_OK
 
 
@@ -830,8 +1129,12 @@ def cmd_remove(
     deps = deps or Deps()
     out = out or sys.stdout
     err = err or sys.stderr
+    reporter = Reporter(
+        out, err, json=bool(getattr(args, "json", False)), command="remove", version=_pkg_version()
+    )
+    reporter.start()
 
-    library = _open_library_or_report("remove", err)
+    library = _open_library_or_report("remove", reporter)
     if library is None:
         return EXIT_USAGE_OR_CONFIG
     owned = library.file.owned(config.exe)
@@ -845,24 +1148,29 @@ def cmd_remove(
         wanted = list(getattr(args, "names", []) or [])
         unknown = [name for name in wanted if name not in by_name]
         if unknown:
-            print(
-                "remove: no owned shortcut named " + ", ".join(repr(n) for n in unknown),
-                file=err,
+            unknown_message = "remove: no owned shortcut named " + ", ".join(
+                repr(n) for n in unknown
             )
+            print(unknown_message, file=err)
             print("remove: nothing was touched", file=err)
+            # error.message is the informative line, not the generic one
+            # printed alongside it (both stay on stderr either way).
+            reporter.event("error", exit=EXIT_USAGE_OR_CONFIG, message=unknown_message)
             return EXIT_USAGE_OR_CONFIG
         victims = [by_name[name] for name in dict.fromkeys(wanted)]
 
     if not victims:
-        print("nothing to remove", file=out)
+        reporter.line("nothing to remove")
+        reporter.event("summary", **_remove_summary_event_fields(0, EXIT_OK))
         return EXIT_OK
 
     for entry in victims:
         library.file.remove(entry)
+    write_out = reporter.err if reporter.json else reporter.out
     try:
-        commit = commit_shortcuts(library.file, config=config, runner=deps.runner, out=out)
+        commit = commit_shortcuts(library.file, config=config, runner=deps.runner, out=write_out)
     except SteamRunningError as exc:
-        print(f"remove: {exc}", file=err)
+        reporter.error(f"remove: {exc}", EXIT_STEAM_RUNNING)
         return EXIT_STEAM_RUNNING
 
     deleted = 0
@@ -871,8 +1179,10 @@ def cmd_remove(
             with contextlib.suppress(OSError):
                 path.unlink()
                 deleted += 1
-    print(commit.describe(library.user.shortcuts_path), file=out)
-    print(f"removed {len(victims)} shortcut(s) and {deleted} grid file(s)", file=out)
+    reporter.line(commit.describe(library.user.shortcuts_path))
+    reporter.event("commit", **_commit_event_fields(commit))
+    reporter.line(f"removed {len(victims)} shortcut(s) and {deleted} grid file(s)")
+    reporter.event("summary", **_remove_summary_event_fields(len(victims), EXIT_OK))
     return EXIT_OK
 
 

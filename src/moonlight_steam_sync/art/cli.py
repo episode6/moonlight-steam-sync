@@ -17,9 +17,10 @@ import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TextIO
+from typing import Any, TextIO
 
-from moonlight_steam_sync import steam
+from moonlight_steam_sync import hosts, steam
+from moonlight_steam_sync import version as _pkg_version
 from moonlight_steam_sync.art.apply import (
     ArtTarget,
     RunSummary,
@@ -29,17 +30,19 @@ from moonlight_steam_sync.art.apply import (
     run_art,
     slot_report,
 )
-from moonlight_steam_sync.art.http import Fetcher
+from moonlight_steam_sync.art.http import Fetcher, HardStop, HttpError
 from moonlight_steam_sync.art.resolve import MatchCache, Resolver, default_cache_path
 from moonlight_steam_sync.art.select import SLOTS, Selector
-from moonlight_steam_sync.art.sgdb import SgdbClient
+from moonlight_steam_sync.art.sgdb import SgdbClient, steam_appid_from_game
 from moonlight_steam_sync.art.steamstore import SteamStoreClient
-from moonlight_steam_sync.config import Config
+from moonlight_steam_sync.config import Config, ConfigError, load_owned_apps, owned_apps_steamid3
+from moonlight_steam_sync.reporting import Reporter, match_json, slot_json_value
 
 # Copied rather than imported from ``__main__`` (which imports this module).
 EXIT_OK = 0
 EXIT_USAGE_OR_CONFIG = 1
 EXIT_STEAM_RUNNING = 2
+EXIT_MOONLIGHT_UNREACHABLE = 3
 EXIT_NETWORK_STOPPED = 4
 EXIT_SIGINT = 130
 
@@ -98,7 +101,7 @@ def build_services(
 def _resolve_targets(
     config: Config,
     provider_factory: ProviderFactory | None,
-    out: TextIO,
+    reporter: Reporter,
 ) -> tuple[TargetProvider, list[ArtTarget]] | None:
     try:
         provider = (
@@ -108,8 +111,36 @@ def _resolve_targets(
         )
         return provider, list(provider.targets())
     except TargetsUnavailable as exc:
-        print(f"art: {exc}", file=out)
+        # Text unchanged from before --json existed (spec 3.11): always
+        # "art: ...", even from `status`, since `reporter.error` always
+        # writes to stderr regardless of which command called this.
+        reporter.error(f"art: {exc}", EXIT_USAGE_OR_CONFIG)
         return None
+
+
+def _art_title_event_fields(index: int, total: int, result: Any) -> dict[str, Any]:
+    """``title`` event fields for ``art`` (spec 3.4.6): kind comes from
+    ``IsHidden`` alone -- ``art`` has no plan to know anything else from."""
+    kind = "stream" if result.target.hidden else "shortcut"
+    if result.skipped:
+        return {
+            "index": index,
+            "total": total,
+            "name": result.target.name,
+            "kind": kind,
+            "appid": result.target.appid,
+            "match": None,
+            "slots": {},
+        }
+    return {
+        "index": index,
+        "total": total,
+        "name": result.target.name,
+        "kind": kind,
+        "appid": result.target.appid,
+        "match": match_json(result.match),
+        "slots": {key: slot_json_value(outcome.source) for key, outcome in result.slots.items()},
+    }
 
 
 def cmd_art(
@@ -125,8 +156,12 @@ def cmd_art(
     """``moonlight-steam-sync art`` -- (re)apply art to owned shortcuts."""
     out = out or sys.stdout
     err = err or sys.stderr
+    json_mode = bool(getattr(args, "json", False))
+    reporter = Reporter(out, err, json=json_mode, command="art", version=_pkg_version())
+    reporter.start()
+    art_out = reporter.err if reporter.json else reporter.out
 
-    found = _resolve_targets(config, provider_factory, err)
+    found = _resolve_targets(config, provider_factory, reporter)
     if found is None:
         return EXIT_USAGE_OR_CONFIG
     provider, targets = found
@@ -135,7 +170,7 @@ def cmd_art(
     if only:
         targets = [t for t in targets if t.name == only]
         if not targets:
-            print(f"art: no owned shortcut named {only!r}", file=err)
+            reporter.error(f"art: no owned shortcut named {only!r}", EXIT_USAGE_OR_CONFIG)
             return EXIT_USAGE_OR_CONFIG
 
     force = bool(getattr(args, "force", False))
@@ -149,10 +184,13 @@ def cmd_art(
     services.resolver.retry_missing = retry_missing
 
     if not config.sgdb_api_key:
-        print(
-            "note: no SteamGridDB API key configured; using Steam's store search and CDN only",
-            file=err,
-        )
+        reporter.note("no SteamGridDB API key configured; using Steam's store search and CDN only")
+
+    title_index = [0]
+
+    def on_title(result: Any) -> None:
+        title_index[0] += 1
+        reporter.title(**_art_title_event_fields(title_index[0], len(targets), result))
 
     try:
         summary = run_art(
@@ -162,24 +200,41 @@ def cmd_art(
             force=force,
             explain=explain,
             provider=provider,
-            out=out,
+            out=art_out,
+            on_title=on_title if json_mode else None,
         )
     except KeyboardInterrupt:
         services.cache.flush()
-        print("interrupted; resume with the same command", file=err)
+        interrupted = RunSummary(stopped_early=True, stop_reason="interrupted")
+        # summary is always the line before error (spec 3.4.6): emit it
+        # first even though there is no real RunSummary to report from.
+        reporter.event("summary", **_art_summary_event_fields(interrupted, EXIT_SIGINT))
+        reporter.error("interrupted; resume with the same command", EXIT_SIGINT)
         return EXIT_SIGINT
 
     for line in summary.lines():
-        print(line, file=out)
+        reporter.line(line)
+    interrupted_message: str | None = None
     if summary.stop_reason == "interrupted":
         # run_art catches the Ctrl-C around each title, so this -- not the
         # handler above -- is the branch a real SIGINT takes (spec 3.9.5).
-        print("interrupted; resume with the same command", file=err)
+        # The JSON `error` event is deferred past `summary` below (spec
+        # 3.4.6: error is always last); the human text prints here, same as
+        # always, since it is not part of summary.lines().
+        interrupted_message = "interrupted; resume with the same command"
+        print(interrupted_message, file=err)
     if summary.stopped_early:
         # The grid files written so far are durable; the icon patches are
         # re-derived from them on the next run, so nothing is lost by not
         # writing shortcuts.vdf now (spec 3.9 item 4: the write comes last).
-        return _exit_code(summary)
+        exit_code = _exit_code(summary)
+        reporter.event("summary", **_art_summary_event_fields(summary, exit_code))
+        reporter.event(
+            "error",
+            exit=exit_code,
+            message=interrupted_message if interrupted_message is not None else summary.stop_reason,
+        )
+        return exit_code
 
     # One atomic shortcuts.vdf write for the icon patches (spec 3.6). The
     # provider's writer decides how to get Steam out of the way; a refusal is
@@ -187,19 +242,63 @@ def cmd_art(
     try:
         provider.commit()
     except steam.SteamRunningError as exc:
-        print(f"art: {exc}", file=err)
+        reporter.event("summary", **_art_summary_event_fields(summary, EXIT_STEAM_RUNNING))
+        reporter.error(f"art: {exc}", EXIT_STEAM_RUNNING)
         return EXIT_STEAM_RUNNING
     except KeyboardInterrupt:
-        print("interrupted while writing shortcuts.vdf; rerun the same command", file=err)
+        reporter.event("summary", **_art_summary_event_fields(summary, EXIT_SIGINT))
+        reporter.error(
+            "interrupted while writing shortcuts.vdf; rerun the same command", EXIT_SIGINT
+        )
         return EXIT_SIGINT
     if summary.written and not _restarted(provider):
         print("restart Steam to see the new artwork", file=err)
-    return _exit_code(summary)
+        reporter.event("note", message="restart Steam to see the new artwork")
+    exit_code = _exit_code(summary)
+    reporter.event("commit", **_commit_event_fields(provider))
+    reporter.event("summary", **_art_summary_event_fields(summary, exit_code))
+    return exit_code
 
 
 def _restarted(provider: TargetProvider) -> bool:
     """Whether the provider's commit already bounced Steam (the sync writer says)."""
     return bool(getattr(provider, "restarted_steam", False))
+
+
+def _commit_event_fields(provider: TargetProvider) -> dict[str, Any]:
+    """``art``'s ``commit`` event (spec 3.4.6): same key set as ``sync``'s
+    -- ``written``/``restarted``/``backup``/``relaunch_error`` -- read off
+    the provider's :class:`~moonlight_steam_sync.art.apply.CommitResult`
+    when it has one (the real, Steam-aware provider always does)."""
+    last_commit = getattr(provider, "last_commit", None)
+    if last_commit is None:
+        return {"written": False, "restarted": False, "backup": None, "relaunch_error": ""}
+    backup = getattr(last_commit, "backup", None)
+    return {
+        "written": bool(getattr(last_commit, "written", False)),
+        "restarted": bool(getattr(last_commit, "restarted", False)),
+        "backup": backup.name if backup is not None else None,
+        "relaunch_error": getattr(last_commit, "relaunch_error", "") or "",
+    }
+
+
+def _art_summary_event_fields(summary: RunSummary, exit_code: int) -> dict[str, Any]:
+    """``art``'s ``summary`` event (spec 3.4.6): the same key set ``sync``
+    uses, with ``added``/``replaced``/``removed`` always 0 -- ``art`` never
+    adds, replaces or removes a shortcut."""
+    return {
+        "added": 0,
+        "replaced": 0,
+        "removed": 0,
+        "filled": summary.filled,
+        "missing": summary.missing,
+        "unmatched": summary.unmatched,
+        "duplicates": {},
+        "pending": 0,
+        "stopped_early": summary.stopped_early,
+        "stop_reason": summary.stop_reason or None,
+        "exit": exit_code,
+    }
 
 
 def _exit_code(summary: RunSummary) -> int:
@@ -214,31 +313,243 @@ def cmd_status(
     config: Config,
     *,
     provider_factory: ProviderFactory | None = None,
+    cache_path: Path | None = None,
+    hosts_dir: Path | None = None,
     out: TextIO | None = None,
     err: TextIO | None = None,
 ) -> int:
-    """``moonlight-steam-sync status`` -- which art slots each shortcut has."""
-    del args
+    """``moonlight-steam-sync status`` -- which art slots each shortcut has.
+
+    Never runs ``moonlight list`` (spec 3.4.6/3.12): ``published`` comes
+    from the resolved host's per-host list cache, read (never refreshed)
+    from ``hosts_dir`` (or ``cache_path``'s sibling ``hosts/`` when unset).
+    """
     out = out or sys.stdout
     err = err or sys.stderr
+    json_mode = bool(getattr(args, "json", False))
+    reporter = Reporter(out, err, json=json_mode, command="status", version=_pkg_version())
+    reporter.start()
 
-    found = _resolve_targets(config, provider_factory, err)
+    owned_apps_flag = getattr(args, "owned_apps", None)
+    if owned_apps_flag:
+        owned_path = Path(owned_apps_flag)
+        try:
+            load_owned_apps(owned_path)
+        except ConfigError as exc:
+            reporter.error(f"status: {exc}", EXIT_USAGE_OR_CONFIG)
+            return EXIT_USAGE_OR_CONFIG
+
+    found = _resolve_targets(config, provider_factory, reporter)
     if found is None:
         return EXIT_USAGE_OR_CONFIG
     _provider, targets = found
 
+    if owned_apps_flag:
+        wanted_steamid3 = owned_apps_steamid3(Path(owned_apps_flag))
+        if wanted_steamid3 is not None:
+            try:
+                user = steam.pick_user(steam.find_steam_root())
+            except steam.SteamError as exc:
+                reporter.error(f"status: {exc}", EXIT_USAGE_OR_CONFIG)
+                return EXIT_USAGE_OR_CONFIG
+            if wanted_steamid3 != user.steamid3:
+                reporter.error(
+                    f"status: owned-apps file is for Steam user {wanted_steamid3} but sync "
+                    f"would write to user {user.steamid3}",
+                    EXIT_USAGE_OR_CONFIG,
+                )
+                return EXIT_USAGE_OR_CONFIG
+
     if not targets:
-        print("no owned shortcuts", file=out)
+        reporter.line("no owned shortcuts")
+        reporter.event("end", count=0)
         return EXIT_OK
 
+    resolved_hosts_dir = (
+        hosts_dir
+        if hosts_dir is not None
+        else (cache_path.parent if cache_path is not None else default_cache_path().parent)
+        / "hosts"
+    )
+    match_cache = MatchCache(cache_path or default_cache_path())
+    host_cache = hosts.read_host_cache(resolved_hosts_dir, config.host) if config.host else None
+    if host_cache is None:
+        # New in this PR (the host cache did not exist in v0.2.0): only_json
+        # keeps plain `status` byte-identical to v0.2.0 (spec 3.11).
+        reporter.note(
+            f"no cached app list for host {config.host or '(none)'}; `published` is unknown; "
+            f"run `list --host {config.host or 'NAME'}`",
+            only_json=True,
+        )
+    published_names = set(host_cache.apps) if host_cache is not None else set()
+
     complete = 0
+    entry_count = 0
     for target in sorted(targets, key=lambda t: t.name.casefold()):
         report = slot_report(target.grid_dir, target.appid)
         if all(value != "-" for value in report.values()):
             complete += 1
         slots = " ".join(f"{slot.key}={report[slot.key]}" for slot in SLOTS)
-        print(f"{target.name} [{target.appid}]: {slots}", file=out)
-    print(f"{len(targets)} shortcut(s), {complete} with every slot filled", file=out)
+        reporter.line(f"{target.name} [{target.appid}]: {slots}")
+        match_entry = match_cache.get(target.name)
+        reporter.event(
+            "entry",
+            name=target.name,
+            app_name=target.app_name,
+            appid=target.appid,
+            hidden=target.hidden,
+            parked=False,
+            published=target.name in published_names,
+            client=False,
+            match=match_json(match_entry),
+            slots={key: (None if value == "-" else value) for key, value in report.items()},
+            stale_art=False,
+            cached=host_cache is not None,
+            cached_when=host_cache.when if host_cache is not None else None,
+        )
+        entry_count += 1
+    reporter.line(f"{len(targets)} shortcut(s), {complete} with every slot filled")
+    reporter.event("end", count=entry_count)
+    return EXIT_OK
+
+
+# ---------------------------------------------------------------------------
+# search (spec 3.4.6, 3.4.8)
+# ---------------------------------------------------------------------------
+
+
+def _as_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+@dataclass
+class _Candidate:
+    source: str
+    id: int
+    name: str
+    verified: bool
+    steam_appid: int | None
+
+
+def cmd_search(
+    args: argparse.Namespace,
+    config: Config,
+    *,
+    services: ArtServices | None = None,
+    cache_path: Path | None = None,
+    out: TextIO | None = None,
+    err: TextIO | None = None,
+) -> int:
+    """``moonlight-steam-sync search "term"`` (spec 3.4.6/3.4.8).
+
+    SGDB (when a key is configured) then Steam's store, de-duplicated by
+    Steam appid (SGDB wins), at most 10 candidates per source.
+    """
+    out = out or sys.stdout
+    err = err or sys.stderr
+    json_mode = bool(getattr(args, "json", False))
+    reporter = Reporter(out, err, json=json_mode, command="search", version=_pkg_version())
+    reporter.start()
+
+    owned: dict[int, str] = {}
+    owned_apps_flag = getattr(args, "owned_apps", None)
+    if owned_apps_flag:
+        try:
+            owned = load_owned_apps(Path(owned_apps_flag))
+        except ConfigError as exc:
+            reporter.error(f"search: {exc}", EXIT_USAGE_OR_CONFIG)
+            return EXIT_USAGE_OR_CONFIG
+
+    term = args.term
+    services = services or build_services(config, cache_path=cache_path)
+
+    if not config.sgdb_api_key:
+        reporter.note("no SteamGridDB API key configured; using Steam's store search and CDN only")
+
+    candidates: list[_Candidate] = []
+    try:
+        if config.sgdb_api_key:
+            try:
+                sgdb_results = services.sgdb.search(term)
+            except HardStop:
+                raise
+            except HttpError:
+                sgdb_results = []
+            for item in sgdb_results[:10]:
+                sgdb_id = _as_int(item.get("id"))
+                if sgdb_id is None:
+                    continue
+                steam_appid: int | None = None
+                try:
+                    game = services.sgdb.game(sgdb_id)
+                    steam_appid = steam_appid_from_game(game)
+                except HardStop:
+                    raise
+                except HttpError:
+                    steam_appid = None
+                candidates.append(
+                    _Candidate(
+                        source="sgdb",
+                        id=sgdb_id,
+                        name=str(item.get("name") or ""),
+                        verified=bool(item.get("verified")),
+                        steam_appid=steam_appid,
+                    )
+                )
+
+        sgdb_steam_ids = {c.steam_appid for c in candidates if c.steam_appid is not None}
+        try:
+            store_results = services.store.search(term)
+        except HardStop:
+            raise
+        except HttpError:
+            store_results = []
+        for item in store_results[:10]:
+            appid = _as_int(item.get("id"))
+            if appid is None or appid in sgdb_steam_ids:
+                continue
+            candidates.append(
+                _Candidate(
+                    source="steam",
+                    id=appid,
+                    name=str(item.get("name") or ""),
+                    verified=True,
+                    steam_appid=appid,
+                )
+            )
+    except HardStop as exc:
+        reporter.error(f"search: {exc}", EXIT_NETWORK_STOPPED)
+        return EXIT_NETWORK_STOPPED
+
+    for candidate in candidates:
+        owned_flag = candidate.steam_appid is not None and candidate.steam_appid in owned
+        tags = []
+        if candidate.verified:
+            tags.append("verified")
+        if owned_flag:
+            tags.append("owned")
+        suffix = f" [{', '.join(tags)}]" if tags else ""
+        reporter.line(f"{candidate.source:5} {candidate.id:>9}  {candidate.name}{suffix}")
+        reporter.event(
+            "candidate",
+            source=candidate.source,
+            id=candidate.id,
+            name=candidate.name,
+            verified=candidate.verified,
+            owned=owned_flag,
+            steam_appid=candidate.steam_appid,
+        )
+
+    if candidates:
+        reporter.line(f"{len(candidates)} candidate(s)")
+    else:
+        reporter.line(f'no candidates for "{term}"')
+    reporter.event("end")
     return EXIT_OK
 
 
@@ -246,5 +557,6 @@ __all__ = [
     "ArtServices",
     "build_services",
     "cmd_art",
+    "cmd_search",
     "cmd_status",
 ]

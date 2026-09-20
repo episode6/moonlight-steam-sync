@@ -15,12 +15,15 @@ fall back to Steam-store-only matching (spec 3.5).
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+from moonlight_steam_sync.hosts import active_host_path, resolve_host
 
 #: Where the config file lives unless overridden (tests override this).
 DEFAULT_CONFIG_DIR = Path.home() / ".config" / "moonlight-steam-sync"
@@ -30,6 +33,31 @@ DEFAULT_KEY_FILE = DEFAULT_CONFIG_DIR / "sgdb-api-key"
 #: Sentinel meaning "the flag was not passed on the command line", so a flag
 #: whose default happens to equal the config default does not clobber it.
 _UNSET = object()
+
+
+class ConfigError(ValueError):
+    """A bad ``--owned-apps`` / ``--ignore-file`` file (spec 3.4.1/3.4.3/3.4.8).
+
+    Raised before the Steam library is opened or Moonlight is asked
+    anything; ``main()`` turns it into ``<command>: <message>`` on stderr
+    (an ``error`` event under ``--json``) and exit 1.
+    """
+
+
+__all__ = [
+    "Config",
+    "ConfigError",
+    "DEFAULT_CONFIG_DIR",
+    "DEFAULT_CONFIG_PATH",
+    "DEFAULT_KEY_FILE",
+    "active_host_path",
+    "default_exe",
+    "default_launch_options",
+    "load_config",
+    "load_owned_apps",
+    "owned_apps_steamid3",
+    "toml_host",
+]
 
 
 def default_exe() -> str:
@@ -65,6 +93,12 @@ class Config:
     sgdb_community_fallback: bool = True
     overrides: dict[str, dict[str, Any]] = field(default_factory=dict)
     config_path: Path = DEFAULT_CONFIG_PATH
+    #: Where ``host`` came from: ``"flag"``, ``"state"`` or ``"config"``
+    #: (which also covers "nothing set", spec 3.4.8/3.12).
+    host_source: str = "config"
+    #: ``--owned-apps PATH``, unparsed -- flag only, never a TOML key (spec
+    #: 3.4.1); ``load_owned_apps()`` does the actual loading/validation.
+    owned_apps_path: Path | None = None
 
     def __post_init__(self) -> None:
         if not self.launch_options:
@@ -105,6 +139,7 @@ def load_config(
     config_path: Path | None = None,
     env: dict[str, str] | None = None,
     key_file: Path | None = None,
+    state_file: Path | None = None,
 ) -> Config:
     """Build a :class:`Config` from the file, environment and CLI flags.
 
@@ -113,10 +148,16 @@ def load_config(
     override was supplied" and does not shadow the file value. Passing an
     object whose attributes are the sentinel :data:`_UNSET` also counts as
     "not supplied", which is how the tests exercise precedence directly.
+
+    ``host`` resolution (spec 3.4.8/3.12): the ``--host`` flag, else
+    ``state_file`` (``active_host_path()`` by default; read only when the
+    flag is not given, and an empty/whitespace-only file counts as absent),
+    else ``host`` in the config file.
     """
     env = os.environ if env is None else env
     config_path = DEFAULT_CONFIG_PATH if config_path is None else config_path
     key_file = DEFAULT_KEY_FILE if key_file is None else key_file
+    state_file = active_host_path() if state_file is None else state_file
 
     file_data = _load_toml(config_path)
 
@@ -164,8 +205,20 @@ def load_config(
     # as an explicit False override before falling back to the file/default.
     restart_steam = False if flag("no_restart_steam") is True else pick("restart_steam", True)
 
+    host_flag = flag("host")
+    host, host_source = resolve_host(
+        str(host_flag) if host_flag is not _UNSET and host_flag else "",
+        state_file,
+        str(file_data.get("host") or ""),
+    )
+
+    owned_apps_flag = flag("owned_apps")
+    owned_apps_path = Path(owned_apps_flag) if owned_apps_flag not in (_UNSET, "", None) else None
+
     cfg = Config(
-        host=pick("host", ""),
+        host=host,
+        host_source=host_source,
+        owned_apps_path=owned_apps_path,
         name_suffix=pick("name_suffix", ""),
         exe=exe,
         launch_options=launch_options,
@@ -179,3 +232,65 @@ def load_config(
         config_path=config_path,
     )
     return cfg
+
+
+def toml_host(config_path: Path) -> str:
+    """The raw ``host`` key from ``config.toml``, ignoring the state file.
+
+    Used by ``host clear`` (spec 3.4.8) to report what applies once the
+    state file no longer takes precedence, without re-running the whole
+    ``--host`` / state-file / config-file resolution chain.
+    """
+    return str(_load_toml(config_path).get("host") or "")
+
+
+def load_owned_apps(path: Path) -> dict[int, str]:
+    """Parse a ``--owned-apps`` file (spec 3.4.1): ``{appid: display name}``.
+
+    Raises :class:`ConfigError` on a missing file, invalid JSON, a
+    ``version`` other than 1, or a non-numeric key -- always before the
+    Steam library is opened or Moonlight is asked anything. The
+    ``steamid3`` field is returned alongside so callers can compare it with
+    the picked Steam user; this function itself does not need a Steam
+    install (``search`` and ``doctor`` load the file without one).
+    """
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ConfigError(f"owned-apps file {path} could not be read: {exc}") from exc
+    try:
+        payload = json.loads(raw)
+    except ValueError as exc:
+        raise ConfigError(f"owned-apps file {path} is not valid JSON: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise ConfigError(f"owned-apps file {path} is not a JSON object")
+    if payload.get("version") != 1:
+        raise ConfigError(f"owned-apps file {path} has an unsupported version")
+    apps = payload.get("apps")
+    if not isinstance(apps, dict):
+        raise ConfigError(f"owned-apps file {path} has no 'apps' object")
+    result: dict[int, str] = {}
+    for key, value in apps.items():
+        try:
+            appid = int(key)
+        except (TypeError, ValueError) as exc:
+            raise ConfigError(
+                f"owned-apps file {path} has a non-numeric appid: {key!r}"
+            ) from exc
+        result[appid] = str(value)
+    return result
+
+
+def owned_apps_steamid3(path: Path) -> int | None:
+    """The ``steamid3`` field of a ``--owned-apps`` file, without validating
+    ``apps`` (used only for the mismatch check, spec 3.4.1)."""
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    try:
+        return int(payload["steamid3"])
+    except (KeyError, TypeError, ValueError):
+        return None

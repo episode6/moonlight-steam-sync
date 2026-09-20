@@ -70,6 +70,12 @@ class ArtTarget:
     name: str
     appid: int
     grid_dir: Path
+    #: ``Shortcut.is_hidden`` / ``.app_name`` -- filled in by
+    #: :class:`SteamShortcutProvider` for ``status --json`` (spec 3.4.6);
+    #: unused by the art phase itself, so every existing caller's default
+    #: (``False`` / ``""``) is fine.
+    hidden: bool = False
+    app_name: str = ""
 
 
 class TargetProvider(Protocol):
@@ -92,10 +98,27 @@ class TargetsUnavailable(RuntimeError):
     """The shortcut layer could not produce the owned shortcuts."""
 
 
-#: How a provider gets its patched ``ShortcutsFile`` onto disk. Returns
-#: whether Steam was restarted to do it, so the caller knows whether the new
-#: artwork is already showing or still needs a restart.
-ShortcutsWriter = Callable[[ShortcutsFile], bool]
+@dataclass
+class CommitResult:
+    """What a :data:`ShortcutsWriter` did to ``shortcuts.vdf`` (spec 3.4.6).
+
+    Mirrors :class:`moonlight_steam_sync.sync.Commit` (the shape the
+    ``commit`` JSON event needs -- ``written``/``restarted``/``backup``/
+    ``relaunch_error``) without importing ``sync``, which itself imports
+    this module.
+    """
+
+    written: bool = False
+    restarted: bool = False
+    backup: Path | None = None
+    relaunch_error: str = ""
+
+
+#: How a provider gets its patched ``ShortcutsFile`` onto disk. Returns a
+#: :class:`CommitResult` describing what happened, so the caller knows
+#: whether the new artwork is already showing or still needs a restart, and
+#: can report the same detail ``sync``'s own ``commit`` event does.
+ShortcutsWriter = Callable[[ShortcutsFile], CommitResult]
 
 
 def patch_icon(entry: Shortcut, icon_path: Path) -> bool:
@@ -118,22 +141,22 @@ def patch_icon(entry: Shortcut, icon_path: Path) -> bool:
     return True
 
 
-def write_when_steam_is_down(shortcuts_file: ShortcutsFile) -> bool:
+def write_when_steam_is_down(shortcuts_file: ShortcutsFile) -> CommitResult:
     """The default :data:`ShortcutsWriter`: write, or refuse if Steam is up.
 
     A bare write under a live Steam is silently lost when Steam rewrites the
     file on exit (spec 2.1), so this never does one. The ``sync`` module
     supplies the writer that shuts Steam down, writes and relaunches it
     (spec 3.6); this default is the safety net for any other caller. Never
-    restarts Steam, so always returns ``False``.
+    restarts Steam, so ``restarted`` is always ``False``.
     """
     if steam.is_running():
         raise steam.SteamRunningError(
             "Steam is running, so shortcuts.vdf was not written (Steam would overwrite "
             "it on exit). Quit Steam and rerun, or let `sync` restart it for you."
         )
-    shortcuts_file.write()
-    return False
+    written = shortcuts_file.write()
+    return CommitResult(written=written)
 
 
 class SteamShortcutProvider:
@@ -152,7 +175,11 @@ class SteamShortcutProvider:
         self._writer: ShortcutsWriter = writer or write_when_steam_is_down
         self._file: ShortcutsFile | None = None
         self._grid_dir: Path | None = None
-        #: Set by :meth:`commit`: whether the writer bounced Steam.
+        #: Set by :meth:`commit`: the writer's full result, for the
+        #: ``commit`` JSON event (spec 3.4.6).
+        self.last_commit = CommitResult()
+        #: Kept for callers that only care whether Steam was bounced;
+        #: mirrors ``last_commit.restarted``.
         self.restarted_steam = False
 
     def _load(self) -> tuple[ShortcutsFile, Path]:
@@ -175,6 +202,8 @@ class SteamShortcutProvider:
                 name=entry.moonlight_name(self._config.launch_options, self._config.name_suffix),
                 appid=entry.appid,
                 grid_dir=grid_dir,
+                hidden=bool(entry.is_hidden),
+                app_name=entry.app_name,
             )
             for entry in shortcuts_file.owned(self._config.exe)
         ]
@@ -188,7 +217,8 @@ class SteamShortcutProvider:
     def commit(self) -> None:
         """Write the icon patches -- a no-op on disk when nothing changed."""
         if self._file is not None and self._file.changed:
-            self.restarted_steam = bool(self._writer(self._file))
+            self.last_commit = self._writer(self._file)
+            self.restarted_steam = self.last_commit.restarted
 
 
 def default_target_provider(config: Config) -> TargetProvider:
@@ -429,6 +459,7 @@ def slot_report(grid_dir: Path, appid: int) -> dict[str, str]:
 
 __all__ = [
     "ArtTarget",
+    "CommitResult",
     "RunSummary",
     "ShortcutsWriter",
     "SlotOutcome",

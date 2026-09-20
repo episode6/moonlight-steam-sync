@@ -16,14 +16,24 @@ file not yet written -- defers the signal itself (``sync.sigint_deferred``).
 from __future__ import annotations
 
 import argparse
+import os
 import platform
 import sys
 from importlib import metadata
 from pathlib import Path
+from typing import TextIO
 
-from moonlight_steam_sync import __version__, moonlight, steam, sync
-from moonlight_steam_sync.art.cli import ProviderFactory, cmd_art, cmd_status
-from moonlight_steam_sync.config import DEFAULT_KEY_FILE, load_config
+from moonlight_steam_sync import __version__, hosts, moonlight, steam, sync
+from moonlight_steam_sync.art.cli import ProviderFactory, cmd_art, cmd_search, cmd_status
+from moonlight_steam_sync.config import (
+    DEFAULT_KEY_FILE,
+    ConfigError,
+    load_config,
+    load_owned_apps,
+    owned_apps_steamid3,
+    toml_host,
+)
+from moonlight_steam_sync.reporting import Reporter
 
 # Exit codes (spec 3.3).
 EXIT_OK = 0
@@ -64,6 +74,11 @@ def build_parser() -> argparse.ArgumentParser:
         description="Sync a Moonlight host's game list into Steam shortcuts, with artwork.",
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {_version()}")
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="one JSON object per stdout line; human progress moves to stderr (spec 3.4.6)",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     sync_p = sub.add_parser("sync", help="add missing shortcuts and their artwork")
@@ -119,8 +134,33 @@ def build_parser() -> argparse.ArgumentParser:
 
     list_p = sub.add_parser("list", help="what the host publishes: added / ignored / new")
     _add_common_host_flag(list_p)
+    list_p.add_argument(
+        "--cached",
+        action="store_true",
+        help="serve the per-host list cache instead of running moonlight (spec 3.12)",
+    )
 
-    sub.add_parser("status", help="owned shortcuts and which art slots each has on disk")
+    status_p = sub.add_parser(
+        "status", help="owned shortcuts and which art slots each has on disk"
+    )
+    _add_common_host_flag(status_p)
+    status_p.add_argument(
+        "--owned-apps", metavar="PATH", help="a plugin-written owned-apps JSON file (spec 3.4.1)"
+    )
+
+    search_p = sub.add_parser("search", help="find a Steam/SteamGridDB candidate for a title")
+    search_p.add_argument("term")
+    search_p.add_argument(
+        "--owned-apps", metavar="PATH", help="a plugin-written owned-apps JSON file (spec 3.4.1)"
+    )
+
+    host_p = sub.add_parser("host", help="show or change the active Moonlight host (spec 3.12)")
+    host_sub = host_p.add_subparsers(dest="host_action", required=True)
+    host_show_p = host_sub.add_parser("show", help="print the resolved host and where it came from")
+    _add_common_host_flag(host_show_p)
+    host_set_p = host_sub.add_parser("set", help="write the active-host state file")
+    host_set_p.add_argument("name")
+    host_sub.add_parser("clear", help="remove the active-host state file")
 
     ignore_p = sub.add_parser(
         "ignore", help="print TOML ignore = [...] lines to paste into config"
@@ -138,10 +178,15 @@ def build_parser() -> argparse.ArgumentParser:
     remove_group.add_argument("names", nargs="*", default=[], metavar="NAME")
 
     launch_p = sub.add_parser("launch", help='exec moonlight stream <host> "Name"')
+    _add_common_host_flag(launch_p)
     launch_p.add_argument("name")
     launch_p.add_argument("extra", nargs=argparse.REMAINDER)
 
-    sub.add_parser("doctor", help="report the environment this tool will run in")
+    doctor_p = sub.add_parser("doctor", help="report the environment this tool will run in")
+    _add_common_host_flag(doctor_p)
+    doctor_p.add_argument(
+        "--owned-apps", metavar="PATH", help="a plugin-written owned-apps JSON file (spec 3.4.1)"
+    )
 
     return parser
 
@@ -170,10 +215,47 @@ def _steam_user_line(root: Path | None) -> str:
     return f"steam user:    {who} -> {user.shortcuts_path}"
 
 
-def cmd_doctor(args: argparse.Namespace) -> int:
+def _session_kind() -> str:
+    """``gamescope``/``desktop``/``unknown`` (spec 3.4.7, the PR-0 probe)."""
+    gamescope_wayland = os.environ.get("GAMESCOPE_WAYLAND_DISPLAY", "")
+    xdg_desktop = os.environ.get("XDG_CURRENT_DESKTOP", "")
+    if gamescope_wayland or "gamescope" in xdg_desktop.casefold():
+        return "gamescope"
+    if xdg_desktop or os.environ.get("WAYLAND_DISPLAY") or os.environ.get("DISPLAY"):
+        return "desktop"
+    return "unknown"
+
+
+def _session_line() -> str:
+    gamescope_wayland = os.environ.get("GAMESCOPE_WAYLAND_DISPLAY", "")
+    xdg_desktop = os.environ.get("XDG_CURRENT_DESKTOP", "")
+    return (
+        f"session:       {_session_kind()} (XDG_CURRENT_DESKTOP={xdg_desktop or '(unset)'}, "
+        f"GAMESCOPE_WAYLAND_DISPLAY={gamescope_wayland or '(unset)'})"
+    )
+
+
+def cmd_doctor(
+    args: argparse.Namespace, *, out: TextIO | None = None, err: TextIO | None = None
+) -> int:
     """Print the environment report spec 3.3 promises: steam dir, user,
     python, moonlight path, key present?, steam running?
+
+    Spec 3.4.7 appends three more lines unconditionally (``session:``,
+    ``active host:``, ``cached hosts:``) and an ``owned-apps file:`` line
+    when ``--owned-apps`` is given; ``doctor`` never exits 1 over a bad
+    file, since it is a diagnostic.
+
+    Under ``--json`` (spec 3.4.6): the report moves to stderr (one line at a
+    time -- the same bytes as the single joined ``print`` below, just split
+    across calls) and stdout carries ``start`` then
+    ``{"event":"end","count":N}``.
     """
+    out = out or sys.stdout
+    err = err or sys.stderr
+    json_mode = bool(getattr(args, "json", False))
+    reporter = Reporter(out, err, json=json_mode, command="doctor", version=_version())
+    reporter.start()
     cfg = load_config(args)
 
     lines = [
@@ -199,33 +281,79 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     lines.append(f"key file:      {DEFAULT_KEY_FILE}")
     lines.append(f"configured host: {cfg.host or '(none set)'}")
 
-    print("\n".join(lines))
+    lines.append(_session_line())
+    lines.append(hosts.format_active_host_line(cfg.host, cfg.host_source))
+    lines.append(hosts.format_cached_hosts_line(hosts.list_cached_hosts(hosts.hosts_dir())))
+
+    owned_apps_flag = getattr(args, "owned_apps", None)
+    if owned_apps_flag:
+        owned_path = Path(owned_apps_flag)
+        try:
+            apps = load_owned_apps(owned_path)
+        except ConfigError as exc:
+            lines.append(f"owned-apps file: {owned_path} (invalid: {exc})")
+        else:
+            steamid3 = owned_apps_steamid3(owned_path)
+            steamid3_text = str(steamid3) if steamid3 is not None else "missing"
+            lines.append(
+                f"owned-apps file: {owned_path} ({len(apps)} apps, steamid3 {steamid3_text})"
+            )
+
+    for line in lines:
+        reporter.line(line)
+    reporter.event("end", count=len(lines))
     return EXIT_OK
 
 
-def cmd_launch(args: argparse.Namespace) -> int:
+def cmd_launch(
+    args: argparse.Namespace, *, out: TextIO | None = None, err: TextIO | None = None
+) -> int:
     """`exec` into `moonlight stream <host> "<name>"` (spec 3.3).
 
     Never returns on success: :func:`moonlight.stream` replaces this
-    process via ``os.execvp``.
+    process via ``os.execvp``. Under ``--json`` (spec 3.4.6): ``start`` then
+    ``exec`` (its only other possible line is ``error``).
     """
+    out = out or sys.stdout
+    err = err or sys.stderr
+    json_mode = bool(getattr(args, "json", False))
+    reporter = Reporter(out, err, json=json_mode, command="launch", version=_version())
+    reporter.start()
+
     cfg = load_config(args)
     if not cfg.host:
-        print(
+        reporter.error(
             "launch: no host configured; set `host` in ~/.config/moonlight-steam-sync/config.toml",
-            file=sys.stderr,
+            EXIT_USAGE_OR_CONFIG,
         )
         return EXIT_USAGE_OR_CONFIG
 
+    binary = moonlight.find_binary()
+    if binary is None:
+        reporter.error(
+            "launch: moonlight CLI not found (native binary, flatpak, or "
+            "MOONLIGHT_BIN)",
+            EXIT_MOONLIGHT_UNREACHABLE,
+        )
+        return EXIT_MOONLIGHT_UNREACHABLE
+
+    reporter.event("exec", host=cfg.host, name=args.name)
+    # stdout/stderr are block-buffered when not attached to a terminal (a
+    # pipe, as the Decky plugin uses), and os.execvp below replaces this
+    # process image without ever flushing Python's buffers -- so without an
+    # explicit flush here, everything emitted so far (start, exec) is lost
+    # rather than reaching the reader.
+    out.flush()
+    err.flush()
     try:
         moonlight.stream(cfg.host, args.name, args.extra)
     except moonlight.MoonlightNotFoundError as exc:
-        print(f"launch: {exc}", file=sys.stderr)
+        reporter.error(f"launch: {exc}", EXIT_MOONLIGHT_UNREACHABLE)
         return EXIT_MOONLIGHT_UNREACHABLE
     except OSError as exc:
         # os.execvp failed to replace the process (e.g. the resolved binary
         # vanished between find_binary() and exec).
-        print(f"launch: failed to run moonlight: {exc}", file=sys.stderr)
+        reporter.error(f"launch: failed to run moonlight: {exc}", EXIT_MOONLIGHT_UNREACHABLE)
         return EXIT_MOONLIGHT_UNREACHABLE
     return EXIT_OK  # pragma: no cover -- unreachable when execvp succeeds
 
@@ -259,7 +387,24 @@ def main(
         if args.command == "art":
             return cmd_art(args, load_config(args), provider_factory=provider_factory)
         if args.command == "status":
-            return cmd_status(args, load_config(args), provider_factory=provider_factory)
+            return cmd_status(
+                args,
+                load_config(args),
+                provider_factory=provider_factory,
+                cache_path=deps.cache_path,
+                hosts_dir=deps.hosts_dir,
+            )
+        if args.command == "search":
+            return cmd_search(args, load_config(args), cache_path=deps.cache_path)
+        if args.command == "host":
+            cfg = load_config(args)
+            return hosts.cmd_host(
+                args,
+                config_path=cfg.config_path,
+                config_host=toml_host(cfg.config_path),
+                json_mode=bool(getattr(args, "json", False)),
+                version=_version(),
+            )
         if args.command == "sync":
             return sync.cmd_sync(args, load_config(args), deps=deps)
         if args.command == "list":
@@ -269,7 +414,17 @@ def main(
         if args.command == "remove":
             return sync.cmd_remove(args, load_config(args), deps=deps)
     except KeyboardInterrupt:
+        # Every subcommand function emits its own `start` as its first line,
+        # so by the time a bare KeyboardInterrupt reaches here that has
+        # already happened; this only needs to add the `error` that must
+        # always be last (spec 3.4.6). Whatever subcommand this was hit
+        # before it had a `plan` to report (sync's own internal handler
+        # covers everything after that), so no `summary` is owed here.
         print(f"\n{sync.RESUME_HINT}", file=sys.stderr)
+        if bool(getattr(args, "json", False)):
+            Reporter(
+                sys.stdout, sys.stderr, json=True, command=str(args.command), version=_version()
+            ).event("error", exit=EXIT_SIGINT, message=sync.RESUME_HINT)
         return EXIT_SIGINT
     parser.error(f"unknown command {args.command!r}")  # pragma: no cover
     return EXIT_USAGE_OR_CONFIG  # pragma: no cover
