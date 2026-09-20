@@ -15,10 +15,12 @@ of them `config.toml`:
 
 This module imports nothing from :mod:`moonlight_steam_sync.config` or
 :mod:`moonlight_steam_sync.sync` (:mod:`config` imports :func:`active_host_path`
-and :func:`read_active_host` from here instead, so the "one function,
-evaluated at call time" contract in spec 3.4.8 holds without a cycle); the
+and :func:`resolve_host` from here instead, so the "one function,
+evaluated at call time" contract in spec 3.4.8 holds without a cycle, and
+the flag -> state file -> config precedence is written down once); the
 list cache reuses :func:`moonlight_steam_sync.art.resolve.cache_dir` for its
-root, as spec 3.4.8/3.12 direct.
+root, as spec 3.4.8/3.12 direct. :mod:`moonlight_steam_sync.reporting`
+imports nothing from the package, so ``cmd_host`` shares its ``Reporter``.
 """
 
 from __future__ import annotations
@@ -34,12 +36,19 @@ from pathlib import Path
 from typing import Any, TextIO
 
 from moonlight_steam_sync.art.resolve import cache_dir
+from moonlight_steam_sync.reporting import Reporter
 
 _SLUG_BAD = re.compile(r"[^a-z0-9._-]")
 
 
 def slug(name: str) -> str:
-    """Lowercase *name*, anything outside ``[a-z0-9._-]`` -> ``_`` (spec 3.12)."""
+    """Lowercase *name*, anything outside ``[a-z0-9._-]`` -> ``_`` (spec 3.12).
+
+    Not injective: ``My Host`` and ``My_Host`` share ``my_host.json``.
+    :func:`read_host_cache` therefore checks the name stored *in* the file,
+    so a collision costs the two hosts their cache (each overwrites the
+    other's) but never serves one host the other's app list.
+    """
     return _SLUG_BAD.sub("_", name.casefold())
 
 
@@ -144,7 +153,13 @@ def read_host_cache(directory: Path, host: str) -> HostCache | None:
         data = json.loads(raw)
     except ValueError:
         return None
-    return HostCache.from_json(data)
+    cache = HostCache.from_json(data)
+    # Same slug, different host (see slug()): not this host's list. Case is
+    # folded on purpose -- host names are case-insensitive, and the slug
+    # already treats MY-GAMING-PC and my-gaming-pc as one host.
+    if cache is not None and cache.host.casefold() != host.casefold():
+        return None
+    return cache
 
 
 def host_cache_timestamp(directory: Path, host: str) -> float | None:
@@ -252,17 +267,14 @@ def cmd_host(
     state_file = state_file if state_file is not None else active_host_path()
     hosts_directory = hosts_directory if hosts_directory is not None else hosts_dir()
 
-    def emit(event_name: str, **fields: Any) -> None:
-        if json_mode:
-            print(json.dumps({"event": event_name, **fields}, sort_keys=True), file=out)
-
-    emit("start", schema=1, version=version, command="host")
+    reporter = Reporter(out, err, json=json_mode, command="host", version=version)
+    reporter.start()
 
     def report_state(host: str, source: str) -> None:
         infos = list_cached_hosts(hosts_directory)
-        print(format_active_host_line(host, source), file=err if json_mode else out)
-        print(format_cached_hosts_line(infos), file=err if json_mode else out)
-        emit(
+        reporter.line(format_active_host_line(host, source))
+        reporter.line(format_cached_hosts_line(infos))
+        reporter.event(
             "host",
             name=host or None,
             source=source,
@@ -291,8 +303,10 @@ def cmd_host(
             "host: no host configured; pass --host, run `host set NAME`, "
             f"or set `host` in {config_path}"
         )
-        print(message, file=err)
-        emit("error", exit=1, message=message)
+        # "no host configured" is contractual (spec 3.4.6, the `host`
+        # bullet): the Decky plugin reads exit 1 plus that text as its
+        # first-run state. tests/test_hosts.py pins it.
+        reporter.error(message, 1)
         return 1
     report_state(host, source)
     return 0

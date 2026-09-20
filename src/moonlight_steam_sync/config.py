@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from moonlight_steam_sync.hosts import active_host_path, read_active_host
+from moonlight_steam_sync.hosts import active_host_path, resolve_host
 
 #: Where the config file lives unless overridden (tests override this).
 DEFAULT_CONFIG_DIR = Path.home() / ".config" / "moonlight-steam-sync"
@@ -206,14 +206,11 @@ def load_config(
     restart_steam = False if flag("no_restart_steam") is True else pick("restart_steam", True)
 
     host_flag = flag("host")
-    if host_flag is not _UNSET and host_flag:
-        host, host_source = str(host_flag), "flag"
-    else:
-        state_host = read_active_host(state_file)
-        if state_host:
-            host, host_source = state_host, "state"
-        else:
-            host, host_source = str(file_data.get("host") or ""), "config"
+    host, host_source = resolve_host(
+        str(host_flag) if host_flag is not _UNSET and host_flag else "",
+        state_file,
+        str(file_data.get("host") or ""),
+    )
 
     owned_apps_flag = flag("owned_apps")
     owned_apps_path = Path(owned_apps_flag) if owned_apps_flag not in (_UNSET, "", None) else None

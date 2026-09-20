@@ -49,6 +49,16 @@ def test_slug_lowercases_and_replaces_anything_outside_a_z0_9_dot_dash_underscor
     assert hosts.slug("Café-PC") == "caf_-pc"
 
 
+def test_two_hosts_that_share_a_slug_never_read_each_others_app_list(tmp_path):
+    """``slug()`` is not injective (``Office PC`` and ``Office_PC`` are both
+    ``office_pc.json``), so the reader checks the name stored in the file:
+    the colliding host sees "no cache", never the other host's titles. Case
+    alone is not a different host."""
+    hosts.write_host_cache(tmp_path, "Office PC", ["Elden Ring"])
+    assert hosts.read_host_cache(tmp_path, "Office_PC") is None
+    assert hosts.read_host_cache(tmp_path, "office pc").apps == ["Elden Ring"]
+
+
 # ---------------------------------------------------------------------------
 # active-host precedence: flag > state file > config.toml
 # ---------------------------------------------------------------------------

@@ -21,8 +21,10 @@ class Reporter:
     today, and :meth:`event` does nothing -- existing tests never see a
     change. ``json=True``: ``out`` carries one JSON object per line and
     nothing else, :meth:`line` moves the human text to ``err``, and
-    :meth:`event` prints the JSON. :meth:`start` and :meth:`error` are
-    unconditional (they also print/emit when ``json`` is false).
+    :meth:`event` prints the JSON. :meth:`start` is just an event (so it,
+    too, is silent when ``json`` is false: v0.2.0 printed no such line);
+    only :meth:`error` is unconditional, because its human text goes to
+    ``err`` in both modes.
     """
 
     def __init__(
