@@ -130,6 +130,9 @@ def test_not_installed_keeps_the_plain_message(tmp_path, monkeypatch):
         ({"LD_LIBRARY_PATH": "/opt/lib:/usr/local/lib"}, None),
         ({"LD_LIBRARY_PATH": "/tmp/_MEIx"}, {}),
         ({"LD_LIBRARY_PATH": "/tmp/_MEIx:/opt/lib"}, {"LD_LIBRARY_PATH": "/opt/lib"}),
+        # A trailing slash on the bundle dir, with no _ORIG to take over.
+        ({"LD_LIBRARY_PATH": "/tmp/_MEIx/"}, {}),
+        ({"LD_LIBRARY_PATH": "/opt/lib:/tmp/_MEIx/"}, {"LD_LIBRARY_PATH": "/opt/lib"}),
         (
             {"LD_LIBRARY_PATH": "/tmp/_MEIx", "LD_LIBRARY_PATH_ORIG": "/opt/lib"},
             {"LD_LIBRARY_PATH": "/opt/lib"},
