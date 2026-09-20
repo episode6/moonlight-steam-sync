@@ -209,11 +209,20 @@ class SteamShortcutProvider:
         return self._file, self._grid_dir
 
     def targets(self) -> Sequence[ArtTarget]:
+        """The owned entries, plus the Moonlight client entry (decky spec
+        3.4.5) whoever ``config.exe`` is -- it is identified by its launch
+        options and the tool's own exe, and ``status`` has to report it so
+        the plugin can find its appid; ``art`` skips it (``client=True``)."""
         shortcuts_file, grid_dir = self._load()
         tool_exe = default_exe()
+        entries = list(shortcuts_file.owned(self._config.exe))
+        client_entry = shortcuts_file.client_entry(tool_exe)
+        if client_entry is not None and not any(entry is client_entry for entry in entries):
+            entries.append(client_entry)
         targets: list[ArtTarget] = []
-        for entry in shortcuts_file.owned(self._config.exe):
-            client = entry.is_client_entry(tool_exe)
+        for entry in entries:
+            client = entry is client_entry
+            kind = "client" if client else ("stream" if entry.is_hidden else "shortcut")
             targets.append(
                 ArtTarget(
                     name=(
@@ -227,7 +236,7 @@ class SteamShortcutProvider:
                     grid_dir=grid_dir,
                     hidden=bool(entry.is_hidden),
                     app_name=entry.app_name,
-                    kind="stream" if entry.is_hidden else "shortcut",
+                    kind=kind,
                     client=client,
                 )
             )

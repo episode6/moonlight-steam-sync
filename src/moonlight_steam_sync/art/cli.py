@@ -38,7 +38,8 @@ from moonlight_steam_sync.art.select import SLOTS, Selector
 from moonlight_steam_sync.art.sgdb import SgdbClient, steam_appid_from_game
 from moonlight_steam_sync.art.steamstore import SteamStoreClient
 from moonlight_steam_sync.config import Config, ConfigError, load_owned_apps, owned_apps_steamid3
-from moonlight_steam_sync.reporting import Reporter, match_json, slot_json_value
+from moonlight_steam_sync.reporting import Reporter, is_stream_match, match_json, slot_json_value
+from moonlight_steam_sync.shortcuts import app_name_for
 
 if TYPE_CHECKING:  # ``sync`` imports this module, so only for annotations.
     from moonlight_steam_sync.sync import Deps
@@ -170,6 +171,9 @@ def cmd_art(
     if found is None:
         return EXIT_USAGE_OR_CONFIG
     provider, targets = found
+    # The Moonlight client entry never gets art (decky spec 3.4.5: no
+    # lookups for "Moonlight").
+    targets = [target for target in targets if not target.client]
 
     only = getattr(args, "only", None)
     if only:
@@ -288,9 +292,10 @@ def _commit_event_fields(provider: TargetProvider) -> dict[str, Any]:
 
 
 def _art_summary_event_fields(summary: RunSummary, exit_code: int) -> dict[str, Any]:
-    """``art``'s ``summary`` event (spec 3.4.6): the same key set ``sync``
-    uses, with ``added``/``replaced``/``removed`` always 0 -- ``art`` never
-    adds, replaces or removes a shortcut."""
+    """``art``'s ``summary`` event (spec 3.4.6): the key set ``sync`` uses
+    minus ``added_by_kind`` (a ``sync``-only key, decky spec 3.13 A3), with
+    ``added``/``replaced``/``removed`` always 0 -- ``art`` never adds,
+    replaces or removes a shortcut."""
     return {
         "added": 0,
         "replaced": 0,
@@ -328,6 +333,13 @@ def cmd_status(
     Never runs ``moonlight list`` (spec 3.4.6/3.12): ``published`` comes
     from the resolved host's per-host list cache, read (never refreshed)
     from ``hosts_dir`` (or ``cache_path``'s sibling ``hosts/`` when unset).
+
+    ``entry.parked`` (decky spec 3.12) is derived from the file and that
+    cache: a hidden entry of kind ``shortcut`` is parked outright, a hidden
+    ``stream`` entry only when the cache says the host does not publish it
+    (no cache, no claim). With ``--owned-apps`` the kind is the plan's
+    (decky spec 3.2); without it a hidden entry whose ``AppName`` is not
+    ``<name><suffix>`` is taken for a ``stream`` one.
     """
     out = out or sys.stdout
     err = err or sys.stderr
@@ -335,11 +347,12 @@ def cmd_status(
     reporter = Reporter(out, err, json=json_mode, command="status", version=_pkg_version())
     reporter.start()
 
+    owned: dict[int, str] | None = None
     owned_apps_flag = getattr(args, "owned_apps", None)
     if owned_apps_flag:
         owned_path = Path(owned_apps_flag)
         try:
-            load_owned_apps(owned_path)
+            owned = load_owned_apps(owned_path)
         except ConfigError as exc:
             reporter.error(f"status: {exc}", EXIT_USAGE_OR_CONFIG)
             return EXIT_USAGE_OR_CONFIG
@@ -396,16 +409,24 @@ def cmd_status(
             complete += 1
         slots = " ".join(f"{slot.key}={report[slot.key]}" for slot in SLOTS)
         reporter.line(f"{target.name} [{target.appid}]: {slots}")
-        match_entry = match_cache.get(target.name)
+        match_entry = None if target.client else match_cache.get(target.name)
+        published = not target.client and target.name in published_names
         reporter.event(
             "entry",
             name=target.name,
             app_name=target.app_name,
             appid=target.appid,
             hidden=target.hidden,
-            parked=False,
-            published=target.name in published_names,
-            client=False,
+            parked=_is_parked(
+                target,
+                match_entry,
+                owned,
+                config,
+                published=published,
+                cache_known=host_cache is not None,
+            ),
+            published=published,
+            client=target.client,
             match=match_json(match_entry),
             slots={key: (None if value == "-" else value) for key, value in report.items()},
             stale_art=bool(match_entry is not None and match_entry.stale_art),
@@ -416,6 +437,27 @@ def cmd_status(
     reporter.line(f"{len(targets)} shortcut(s), {complete} with every slot filled")
     reporter.event("end", count=entry_count)
     return EXIT_OK
+
+
+def _is_parked(
+    target: ArtTarget,
+    match: Match | None,
+    owned: dict[int, str] | None,
+    config: Config,
+    *,
+    published: bool,
+    cache_known: bool,
+) -> bool:
+    """``entry.parked`` for ``status`` (decky spec 3.12); see :func:`cmd_status`."""
+    if target.client or not target.hidden:
+        return False
+    if owned is not None:
+        stream_kind = is_stream_match(match, owned)
+    else:
+        stream_kind = target.app_name != app_name_for(target.name, config.name_suffix)
+    if stream_kind:
+        return cache_known and not published
+    return True
 
 
 # ---------------------------------------------------------------------------
