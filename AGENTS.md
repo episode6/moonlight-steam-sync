@@ -16,13 +16,25 @@ exactly the way Steam's UI and tools like SGDBoop write it. See
 full design; this file is the day-to-day operating summary.
 
 A second spec, `~/specs/moonlight-steam-sync/decky-plugin.md`, is in
-progress on top of that build: a Decky Loader plugin that runs `sync` from
-Game Mode and stops creating visible shortcuts for games the Deck's own
-Steam account already owns. Its CLI half lands as a stack of PRs behind new,
+progress on top of that build: a Decky Loader plugin,
+[`episode6/moonlight-steam-sync-decky`](https://github.com/episode6/moonlight-steam-sync-decky)
+(display name **Moonlight Sync**), that runs `sync` from Game Mode and
+stops creating visible shortcuts for games the Deck's own Steam account
+already owns. Its CLI half lands as a stack of PRs behind new,
 additive flags (`--json`, `--owned-apps`, `host`, `search`, `match`,
 `--commit`, ...); until it lands in full, every command's behaviour with
 none of those flags passed stays byte-identical to the release before it
 started (spec 3.11).
+
+**The CLI contract with the plugin repo** is spec 3.4 (every flag and
+subcommand name) and spec 3.4.6 (the `--json` NDJSON schema, versioned by
+its own `"schema"` field). Both are load-bearing for a sibling session
+building the plugin against these branches: renaming, removing or
+changing the meaning of a flag, subcommand or event key is not a decision
+this repo makes unilaterally -- adding a key or an event is fine (the
+schema is additive-only), anything else needs the plugin updated in step.
+When in doubt, treat spec 3.4/3.4.6 as frozen and escalate (spec 5) rather
+than improvise.
 
 ## Hard rules
 
@@ -109,13 +121,29 @@ drifting apart.
 `sync.py` (the `sync`, `list`, `ignore` and `remove` subcommands, the one
 shutdown -> write -> relaunch path, and the resumability e2e tests) in PR-5;
 and the release pipeline (`release.yml`, `install.sh`, `--version` from
-package metadata, `CHANGELOG.md`) in PR-6. Every subcommand in spec 3.3 is
-now real, `v0.1.0` is released, and PR-7 (the `server-scripts` switch-over)
-has landed too. What remains is the device checklist (spec section 8, a
-human gate; the installer and Python-version findings from its first run
-are already folded in). Do not add code to a module ahead of its PR without
-checking the work plan first -- the modules are split the way they are so
-independent PRs can land in parallel.
+package metadata, `CHANGELOG.md`) in PR-6. Every subcommand in the original
+spec 3.3 is real and `v0.1.0` through `v0.2.0` are released; PR-7 (the
+`server-scripts` switch-over) has landed too.
+
+That was the whole first spec (`initial-build.md`). The second spec
+(`decky-plugin.md`, this section's opening paragraph) is now layered on
+top of it: `hosts.py` and `reporting.py` above are its PR-1 additions, and
+its PR-1 through PR-4 have since added `--json` throughout, `search` and
+`status --owned-apps`/`--host` (PR-1), `match`/pins/`--ignore-file`
+(PR-2), `--owned-apps`/hidden shortcuts/replacements/`--client-shortcut`
+(PR-3) and `--commit await-exit` (PR-4) to `sync.py`, `art/cli.py` and
+`__main__.py` -- see the "Owned apps, hidden entries and parking" and
+`sync.py` sections below for the rules those PRs added. What remains on
+the CLI side is this docs PR (PR-8's CLI-repo half) and then cutting
+`v0.3.0`; on the plugin side, `episode6/moonlight-steam-sync-decky`
+(PR-5 through PR-8) is a separate, parallel stack that builds against the
+`--json` schema through a fake CLI and does not need this repo released
+first. Neither the original spec's device checklist (section 8) nor the
+plugin spec's PR-0 device probes (V1-V5, decky spec 2.2-2.3) have been run
+yet -- both are human gates that come after both stacks merge, not before
+this PR. Do not add code to a module ahead of its PR without checking the
+work plan first -- the modules are split the way they are so independent
+PRs can land in parallel.
 
 ### Working on the orchestration (`sync.py`)
 
@@ -255,6 +283,15 @@ independent PRs can land in parallel.
   never by name.** `art_targets()` and `art` skip it, `status` reports it
   (`client: true`) whoever `config.exe` is, `remove --client` deletes it,
   `remove --all` only when `exe` is the tool.
+- **The plugin itself never writes under the Steam directory.** It never
+  parses or writes `shortcuts.vdf`, never touches `grid/`, and never calls
+  `AddShortcut`, `RemoveShortcut`, `SetShortcutName`,
+  `SetAppLaunchOptions`, `SetAppHiddenState` or `SetCustomArtworkForApp`
+  (decky spec 3.11) -- every one of those is this CLI's job, through
+  `sync.commit_shortcuts()`. This repo has no code to enforce that (it
+  lives in the plugin repo), but a design here that only works if the
+  plugin writes to the Steam tree directly is a spec violation, not an
+  option.
 
 ### Working on the Steam side (`vdf.py`, `shortcuts.py`, `steam.py`)
 
@@ -564,3 +601,12 @@ gate before PR-7 (the `server-scripts` migration); in practice the release
 and PR-7 went first so the checklist could run against an installed tool --
 agents implementing PR-1 through PR-6 did not need device access, only the
 synthetic fixtures above.
+
+That checklist is about this CLI alone. The Decky-plugin spec has its own,
+separate human gate -- the PR-0 device probes (V1-V5, decky spec 2.2-2.3:
+whether a controller-layout selection can be copied onto a hidden shortcut,
+and the exact restart-from-Game-Mode window) and, once the plugin repo's
+own build lands, its `DEVICE-CHECKLIST.md`. Agents implementing the CLI
+half (PR-1 through PR-4 and this docs PR) do not need device access either;
+an unrun probe is an accepted state, not a blocker, for that work (decky
+spec 5).

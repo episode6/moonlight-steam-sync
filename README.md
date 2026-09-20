@@ -11,13 +11,19 @@ host such as [Sunshine](https://github.com/LizardByte/Sunshine), but nothing
 about it is SteamOS-specific beyond assuming a Linux Steam install and a
 `moonlight` client (native binary or the Flathub flatpak) on `PATH`.
 
-**Status:** feature complete; every subcommand below works (`sync`, `list`,
-`ignore`, `remove`, `art`, `status`, `launch`, `doctor`), and the release
-pipeline (a `.pyz` zipapp plus `install.sh`) is in place. **Not yet
-verified against a real Steam Deck** -- the device checklist in the design
-spec (section 8) is the gate before the first tagged release, `v0.1.0`,
-which has not been cut yet. See [`AGENTS.md`](AGENTS.md) for the work plan
-and the exact release procedure.
+**Status:** feature complete as a standalone tool -- every subcommand below
+works (`sync`, `list`, `ignore`, `remove`, `art`, `status`, `search`,
+`match`, `host`, `launch`, `client`, `doctor`) -- and released through
+`v0.2.0` via the `.pyz` zipapp / `install.sh` pipeline below. On top of
+that, the CLI half of a companion [Decky plugin](#decky-plugin) is in
+progress behind additive flags (`--json`, `--owned-apps`, `--commit`, ...)
+that leave every command byte-identical when they are not passed; see
+`~/specs/moonlight-steam-sync/decky-plugin.md` and the
+[`CHANGELOG`](CHANGELOG.md)'s `[Unreleased]` entry. **Not yet verified
+against a real Steam Deck beyond the initial `v0.1.0` install** -- the
+device checklist in the design spec (section 8) and the plugin's own PR-0
+device probes are still open. See [`AGENTS.md`](AGENTS.md) for the work
+plan and the exact release procedure.
 
 ## Install
 
@@ -42,7 +48,7 @@ version check yet, so it is not a no-op when already current; the
 tracking latest, or `INSTALL_DIR=/some/other/dir` to install somewhere
 other than `~/.local/bin`.
 
-**Until the first release is cut**, run from a git checkout instead:
+To run from a git checkout instead:
 
 ```sh
 git clone https://github.com/episode6/moonlight-steam-sync.git
@@ -478,6 +484,50 @@ ends in `error` (exit 2) with no `commit` at all. See
 `~/specs/moonlight-steam-sync/decky-plugin.md` section 3.4.6 for the full
 schema (every event's exact keys) if you are building another consumer of
 this stream; it is versioned (`schema: 1`) and additive-only.
+
+## Decky plugin
+
+A companion [Decky Loader](https://github.com/SteamDeckHomebrew/decky-loader)
+plugin, display name **Moonlight Sync**
+([`episode6/moonlight-steam-sync-decky`](https://github.com/episode6/moonlight-steam-sync-decky)),
+drives this CLI from Steam's Game Mode: a Quick Access Menu panel with a
+*Sync now* button and an *Open Moonlight* button, a Stream button on the
+library page of every owned game the host publishes, and a Titles page for
+fixing a wrong match without leaving Game Mode. It is a thin frontend --
+no second `shortcuts.vdf` parser or writer, no live `AddShortcut` calls --
+that bundles a pinned release of this CLI, installs it to
+`~/.local/bin/moonlight-steam-sync`, and shells out to it as a subprocess,
+relaying its `--json` event stream to the plugin's own UI. Concretely, it
+drives:
+
+- **`--json`** (see "Machine-readable output" above) to read structured
+  events instead of parsing human progress lines.
+- **`--owned-apps PATH`** (see "Games you own on Steam" above), which it
+  writes fresh before every run from the Deck's own Steam library, so
+  titles the account already owns get a hidden shortcut and a Stream
+  button instead of a second tile.
+- **`--ignore-file PATH`** (see "Ignoring, removing, listing" above) for
+  its own ignore list, kept outside `config.toml` since the tool never
+  writes that file.
+- **`--client-shortcut`** (see "Games you own on Steam" above) for the
+  hidden `Moonlight` shortcut its *Open Moonlight* button launches.
+- **`--park-unpublished`** (see "Multiple hosts" above), so switching the
+  plugin's active host hides what the other host does not publish instead
+  of leaving stale tiles behind.
+- **`--commit await-exit`** (see "Steam must restart" above), because the
+  plugin can only ask Steam to exit from Game Mode -- gamescope-session
+  restarts the client on its own -- and must never start it itself.
+
+The plugin never parses or writes `shortcuts.vdf`, never calls a live
+Steam API to add, hide, rename or reconfigure a shortcut
+(`AddShortcut`/`SetAppHiddenState`/`SetShortcutName`/
+`SetCustomArtworkForApp`/...), and never touches `grid/` directly: this CLI
+stays the one writer, exactly as it is for a standalone install. See the
+plugin repo's own README for installation and
+`~/specs/moonlight-steam-sync/decky-plugin.md` for the full design; its
+CLI-facing contract is this README's "Usage" and "Machine-readable output"
+sections plus `AGENTS.md`'s pointer to the spec sections that pin down the
+flag and event-schema surface.
 
 ## Development
 
