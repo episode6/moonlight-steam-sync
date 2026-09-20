@@ -71,10 +71,11 @@ moonlight_steam_sync/
   steam.py         Steam root + userdata discovery (single user, else loginusers.vdf MostRecent -> steamid3),
                    grid paths, is_running(), shutdown()/relaunch()
   moonlight.py     find binary (native `moonlight`, else flatpak), list(host) -> [App(name)],
-                   stream(host, name, extra)
+                   stream(host, name, extra), run_client(extra)
   hosts.py         active-host state file (read/write/clear_active_host); per-host `moonlight list`
                    cache (slug, HostCache, list_cached_hosts); `host show|set|clear` (cmd_host)
-  reporting.py     Reporter: the `--json` event stream shared by sync.py and art/cli.py
+  reporting.py     Reporter: the `--json` event stream shared by sync.py and art/cli.py; the title
+                   kinds (KIND_*, STREAM_HOWS, is_stream_match) both need
   art/
     http.py        urllib transport seam, User-Agent, timeouts, pacing, backoff, the 429 hard stop
     sgdb.py        API client (urllib): search, game(platformdata), grids/heroes/logos/icons
@@ -84,7 +85,8 @@ moonlight_steam_sync/
     select.py      per-slot asset choice policy; download; mime sniff -> ext
     apply.py       write grid files for an appid (skip existing), set icon field
     cli.py         the `art`, `status`, `search` and `match` subcommands
-  sync.py          the orchestration: list -> diff -> art -> write -> restart; progress lines
+  sync.py          the orchestration: list -> (resolve) -> plan (kinds, replacements, duplicates,
+                   parking, the client entry) -> art -> write -> restart; progress lines
 ```
 
 `art/http.py` and `art/cli.py` are two small additions to the spec 3.4 map:
@@ -157,6 +159,64 @@ independent PRs can land in parallel.
   is to know the Steam appid, so a dry run does make the lookup calls and
   writes `matches.json` (the real run then reuses every resolution). It
   downloads nothing and touches nothing under the Steam directory.
+
+### Owned apps, hidden entries and parking (decky spec 3.2, 3.3, 3.4.2, 3.11, 3.12)
+
+- **Without the new flags, v0.2.0's bytes.** With none of `--json`,
+  `--owned-apps`, `--ignore-file`, `--client-shortcut`, `--commit`,
+  `--park-unpublished`, `--cached`, `status --host`, no new subcommand, no
+  `active-host` state file and no `pinned`/`stale_art` entry in
+  `matches.json`, every command produces the same stdout, stderr, exit
+  code and the same bytes under the Steam root and in `matches.json` as
+  v0.2.0 (`1488a96`). Exactly three things differ and nothing else: the
+  three extra `doctor` lines; the per-host list cache `sync`, `list` and
+  `ignore --all` write beside `matches.json`; and `list`'s `same-game-as`
+  line, which needs a second host's cache file to exist at all. The
+  frozen `tests/test_sync_e2e.py` is the proof. Concretely: no title is
+  resolved ahead of the plan and `build_plan` gets no `matches` unless
+  `--owned-apps` is passed (`list --owned-apps` reads them from the
+  cache, never resolving), so a `stale_art` entry is acted on by `sync
+  --owned-apps` and `art --force` only; every new human line is printed
+  only when the plan holds the change it describes; `IsHidden` is only
+  ever flipped by `--owned-apps` (a visible `stream` entry is re-hidden)
+  or `--park-unpublished` (parking and unparking); and `list` labels a
+  hidden entry `parked` only under `--owned-apps`.
+- **A hidden entry is still an owned entry.** `remove --all`, adoption and
+  the plan treat it exactly like a visible one; nothing looks a shortcut up
+  by `AppName`. A `stream` entry's `AppName` is the owned game's display
+  name (no suffix) so Steam Input offers it the retail game's layouts, and
+  its launch options carry the Moonlight name, which is the only way back
+  to it -- `--owned-apps` refuses a `launch_options` template without
+  `{name}` for that reason.
+- **A rename is a replacement, never an in-place edit of `AppName`** (the
+  appid would silently stop matching the grid files). `apply_replacement`
+  swaps the entry in place (`ShortcutsFile.replace`, same key) and moves
+  the art *before* the art phase: `kind-changed` / `name-changed` rename
+  the five grid files to the new appid with `os.replace` (zero downloads),
+  `rematched` (the title's `stale_art` flag) deletes them instead. Every
+  move is idempotent -- a source that is gone with a target that exists is
+  done, a target is never overwritten -- so a crash between two
+  replacements is finished by the rerun (`tests/test_sync_e2e_replacements.py`).
+  The flag is cleared only once the art phase has actually run for the
+  title; never after an early stop and never under `--no-art`.
+- **`IsHidden` is the one field edited in place**: parking, unparking and a
+  `shortcut -> stream` flip that keeps the `AppName` all toggle it without
+  a replacement, and `--limit` never counts a flip (it counts additions and
+  replacements together, host-list order, never splitting a replacement).
+- **Entries never record a host.** Which host a tile streams from is
+  decided at launch time by the active-host rule; the tool's only
+  host-scoped state is the read-only list cache under `<cache dir>/hosts/`.
+  Parking keeps the entry, its appid, its art, its pin and its layout, so
+  switching back is one write that flips bits and no downloads.
+- **Duplicates: first in host order wins.** Two titles resolving to one
+  owned game collide on `AppName`; the later one is kind `duplicate`, gets
+  no entry (an entry it had is removed with its art, unless that entry *is*
+  the winner's hidden entry, which stays), and a `--none` pin gives it a
+  tile again.
+- **The client entry is identified by launch options + the tool's exe,
+  never by name.** `art_targets()` and `art` skip it, `status` reports it
+  (`client: true`) whoever `config.exe` is, `remove --client` deletes it,
+  `remove --all` only when `exe` is the tool.
 
 ### Working on the Steam side (`vdf.py`, `shortcuts.py`, `steam.py`)
 
@@ -288,9 +348,10 @@ every title (`tests/test_art_apply.py`).
   cache with no pinned or stale entry is byte-identical to one written
   before pins existed. `match`'s immediate path (delete the title's grid
   files, clear its `icon`) goes through `sync.commit_shortcuts()` like
-  `remove`; `--defer-art` only marks the entry `stale_art`. Acting on that
-  flag (a `rematched` replacement in `build_plan`, decky spec 3.4.2) is
-  the owned-apps PR's job; until it lands, `sync` keeps the art on disk.
+  `remove`; `--defer-art` only marks the entry `stale_art`, which `sync
+  --owned-apps` acts on as a `rematched` replacement (decky spec 3.4.2)
+  and `art --force` clears (it refilled every slot); a plain `sync` keeps
+  the art on disk, since it resolves nothing ahead of the plan.
 - **`stale_art` belongs to the grid files, not to the match.** It says
   "the art on disk came from an earlier match", so `MatchCache.put()`
   carries it forward onto whatever resolution replaces a flagged entry;
