@@ -26,7 +26,7 @@ from importlib import metadata
 from pathlib import Path
 from typing import Any, TextIO
 
-from moonlight_steam_sync import __version__, hosts, moonlight, steam, sync
+from moonlight_steam_sync import __version__, hosts, moonlight, procenv, steam, sync
 from moonlight_steam_sync.art.cli import (
     ProviderFactory,
     cmd_art,
@@ -450,7 +450,8 @@ def cmd_doctor(
     lines.append(f"steam running: {'yes' if _steam_running() else 'no'}")
 
     moonlight_bin = moonlight.find_binary()
-    lines.append(f"moonlight:     {' '.join(moonlight_bin) if moonlight_bin else 'not found'}")
+    moonlight_found = " ".join(moonlight_bin) if moonlight_bin else moonlight.not_found_label()
+    lines.append(f"moonlight:     {moonlight_found}")
 
     key_present = bool(cfg.sgdb_api_key)
     lines.append(f"sgdb api key:  {'present' if key_present else 'not set'}")
@@ -609,6 +610,11 @@ def main(
     the one used by ``sync`` / ``list`` / ``ignore`` / ``remove`` (see
     :class:`moonlight_steam_sync.sync.Deps`); tests inject fakes.
     """
+    if argv is None:
+        # A real invocation, not a test: undo a PyInstaller parent's
+        # LD_LIBRARY_PATH (Decky's plugin_loader) before anything loads
+        # libssl or runs flatpak. A no-op everywhere else.
+        procenv.reexec_if_needed()
     parser = build_parser()
     args = parser.parse_args(argv)
     if args.command == "remove" and not (args.all or args.names or args.client):

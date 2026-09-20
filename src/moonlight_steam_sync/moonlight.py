@@ -26,6 +26,12 @@ LIST_TIMEOUT_S = 60.0
 FLATPAK_APP_ID = "com.moonlight_stream.Moonlight"
 
 
+#: Why the last :func:`find_binary` flatpak probe failed, when it did: a
+#: `flatpak list` that *crashes* (a broken library path, say) is not the same
+#: finding as "the app is not installed", and used to be reported as one.
+_flatpak_problem: str | None = None
+
+
 class MoonlightNotFoundError(RuntimeError):
     """No usable `moonlight` binary (native, flatpak, or MOONLIGHT_BIN)."""
 
@@ -57,6 +63,8 @@ def find_binary() -> list[str] | None:
     if native:
         return [native]
 
+    global _flatpak_problem
+    _flatpak_problem = None
     flatpak = shutil.which("flatpak")
     if flatpak:
         try:
@@ -67,12 +75,27 @@ def find_binary() -> list[str] | None:
                 timeout=5,
                 check=False,
             )
-        except OSError:
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            _flatpak_problem = f"`{flatpak} list` could not run: {exc}"
             return None
         if FLATPAK_APP_ID in result.stdout:
             return [flatpak, "run", FLATPAK_APP_ID]
+        if result.returncode != 0:
+            detail = (result.stderr.strip().splitlines() or ["no output"])[0]
+            _flatpak_problem = f"`{flatpak} list` failed (exit {result.returncode}): {detail}"
 
     return None
+
+
+def not_found_label() -> str:
+    """`doctor`'s value for a missing binary: ``not found``, plus the reason
+    when the flatpak probe itself failed rather than came back empty."""
+    return f"not found ({_flatpak_problem})" if _flatpak_problem else "not found"
+
+
+def _not_found_message() -> str:
+    message = "moonlight CLI not found (native binary, flatpak, or MOONLIGHT_BIN)"
+    return f"{message}: {_flatpak_problem}" if _flatpak_problem else message
 
 
 def _parse_list(text: str) -> list[App]:
@@ -104,9 +127,7 @@ def list_apps(host: str, *, timeout: float = LIST_TIMEOUT_S) -> list[App]:
     """
     binary = find_binary()
     if binary is None:
-        raise MoonlightNotFoundError(
-            "moonlight CLI not found (native binary, flatpak, or MOONLIGHT_BIN)"
-        )
+        raise MoonlightNotFoundError(_not_found_message())
 
     argv = [*binary, "list", host]
     try:
@@ -140,9 +161,7 @@ def stream(host: str, name: str, extra_args: Sequence[str] = ()) -> None:
     """
     binary = find_binary()
     if binary is None:
-        raise MoonlightNotFoundError(
-            "moonlight CLI not found (native binary, flatpak, or MOONLIGHT_BIN)"
-        )
+        raise MoonlightNotFoundError(_not_found_message())
 
     argv = [*binary, "stream", host, name, *extra_args]
     os.execvp(argv[0], argv)
@@ -158,9 +177,7 @@ def run_client(extra_args: Sequence[str] = ()) -> None:
     """
     binary = find_binary()
     if binary is None:
-        raise MoonlightNotFoundError(
-            "moonlight CLI not found (native binary, flatpak, or MOONLIGHT_BIN)"
-        )
+        raise MoonlightNotFoundError(_not_found_message())
 
     argv = [*binary, *extra_args]
     os.execvp(argv[0], argv)
