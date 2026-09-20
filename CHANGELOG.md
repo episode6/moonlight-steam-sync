@@ -26,9 +26,15 @@ are unchanged from `v0.2.0` (the three sanctioned exceptions -- the new
   stderr, so a caller like the Decky plugin can read a line-oriented event
   stream without parsing prose. Every object has an `"event"` key; the
   stream always opens with `start` (`schema`, `version`, `command`) and, on
-  a non-zero exit, closes with `error` (`exit`, `message`). See the
-  README's "Machine-readable output" section for the full schema, which is
-  versioned (`schema: 1`) and additive-only.
+  a non-zero exit, closes with `error` (`exit`, `message`). `--json launch`
+  flushes `start` and `exec` before `moonlight stream` replaces the
+  process, so a reader on the other end of a pipe (the Decky plugin) sees
+  them even though the process never returns; a missing `moonlight` binary
+  yields `start`, `error` rather than `start`, `exec`, `error`. `sync`'s
+  `summary` event's `stopped_early` always agrees with `stop_reason` (both
+  null, or both set), including on the `--dry-run` hard-stop and `Ctrl-C`
+  paths. See the README's "Machine-readable output" section for the full
+  schema, which is versioned (`schema: 1`) and additive-only.
 - **`search "term"`**: looks a title up against SteamGridDB (when a key is
   configured) and Steam's own store, the same way `sync`'s art phase does,
   and prints the candidates -- with `--owned-apps`, flagged `owned` -- to
@@ -140,16 +146,6 @@ are unchanged from `v0.2.0` (the three sanctioned exceptions -- the new
   `sync`'s `summary` gains `replaced`, `removed`, `duplicates` and
   `added_by_kind` (`{"stream": n, "shortcut": n}`, new entries only,
   decky spec 3.13 A3).
-
-### Fixed
-
-- `--json launch`: `start` and `exec` are now flushed before `moonlight
-  stream` replaces the process, so a reader on the other end of a pipe (as
-  the Decky plugin uses) actually sees them; a missing `moonlight` binary
-  now yields `start`, `error` rather than `start`, `exec`, `error`.
-- `sync --json`'s `summary` event: `stopped_early` now always agrees with
-  `stop_reason` (both null, or both set), including on the `--dry-run`
-  hard-stop and `Ctrl-C` paths.
 
 ## [0.2.0] - 2026-09-18
 

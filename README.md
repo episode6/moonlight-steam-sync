@@ -27,8 +27,6 @@ plan and the exact release procedure.
 
 ## Install
 
-Once `v0.1.0` (or later) has been released:
-
 ```sh
 curl -fsSL https://raw.githubusercontent.com/episode6/moonlight-steam-sync/main/install.sh | sh
 ```
@@ -42,8 +40,7 @@ installer also appends an `export PATH=...` line to `~/.bashrc` -- or
 it only print the line instead). Re-run the
 same command any time to upgrade to the latest release -- it always
 re-downloads and reinstalls, so it is safe to run repeatedly (there is no
-version check yet, so it is not a no-op when already current; the
-`server-scripts` wrapper in a later PR adds one). Set
+version check, so it is not a no-op when already current). Set
 `MOONLIGHT_STEAM_SYNC_VERSION=vX.Y.Z` to pin a specific release instead of
 tracking latest, or `INSTALL_DIR=/some/other/dir` to install somewhere
 other than `~/.local/bin`.
@@ -111,7 +108,12 @@ all.
 
 Run `moonlight-steam-sync doctor` to see what the tool detects on your
 machine (Steam install, Python version, `moonlight` binary, whether an API
-key is configured, whether Steam is currently running).
+key is configured, whether Steam is currently running). It always also
+prints a `session:` line (interactive vs. Game Mode/Decky), the resolved
+`active host:` and where it came from, and a `cached hosts:` line listing
+what `sync`/`list`/`ignore --all` have cached per host; pass
+`--owned-apps`, `--ignore-file` or `--client-shortcut` and it adds a line
+reporting that file's or shortcut's state too.
 
 The `moonlight` CLI is found in this order: the `MOONLIGHT_BIN` environment
 variable (a full command line, e.g. `flatpak run --command=moonlight
@@ -265,11 +267,12 @@ After `4` or `130`, rerun the same command to continue.
 
 ### Multiple hosts
 
-`launch`, `sync`, `list`, `ignore` and `status` resolve which host to talk
-to in this order: the `--host` flag, then an *active host* set with `host
-set NAME`, then `host` in `config.toml`. The active host is a small state
-file (`$XDG_STATE_HOME/moonlight-steam-sync/active-host`, not
-`config.toml`), so switching hosts never edits the config:
+`launch`, `sync`, `list`, `ignore`, `status`, `client` and `match` all
+resolve which host to talk to the same way, in this order: the `--host`
+flag, then an *active host* set with `host set NAME`, then `host` in
+`config.toml`. The active host is a small state file
+(`$XDG_STATE_HOME/moonlight-steam-sync/active-host`, not `config.toml`), so
+switching hosts never edits the config:
 
 ```sh
 moonlight-steam-sync host show      # the resolved host and where it came from
@@ -277,8 +280,10 @@ moonlight-steam-sync host set OFFICE-PC
 moonlight-steam-sync host clear     # back to config.toml's `host`
 ```
 
-`--host` on `list`, `status`, `ignore` or `doctor` is per-invocation and
-never touches the state file -- only `host set` does.
+`--host` on any command that accepts it (`sync`, `list`, `status`,
+`ignore`, `launch`, `doctor`, `host show`) is per-invocation and never
+touches the state file -- only `host set` does. `client` and `match`
+resolve the host the same way but take no `--host` flag of their own.
 
 Shortcuts do not record a host: an entry carries only the Moonlight name,
 and `launch` picks the host at stream time, so a title both hosts publish

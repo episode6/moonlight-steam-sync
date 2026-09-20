@@ -134,15 +134,15 @@ its PR-1 through PR-4 have since added `--json` throughout, `search` and
 (PR-3) and `--commit await-exit` (PR-4) to `sync.py`, `art/cli.py` and
 `__main__.py` -- see the "Owned apps, hidden entries and parking" and
 `sync.py` sections below for the rules those PRs added. What remains on
-the CLI side is this docs PR (PR-8's CLI-repo half) and then cutting
-`v0.3.0`; on the plugin side, `episode6/moonlight-steam-sync-decky`
-(PR-5 through PR-8) is a separate, parallel stack that builds against the
-`--json` schema through a fake CLI and does not need this repo released
-first. Neither the original spec's device checklist (section 8) nor the
-plugin spec's PR-0 device probes (V1-V5, decky spec 2.2-2.3) have been run
-yet -- both are human gates that come after both stacks merge, not before
-this PR. Do not add code to a module ahead of its PR without checking the
-work plan first -- the modules are split the way they are so independent
+the CLI side is cutting `v0.3.0`; on the plugin side,
+`episode6/moonlight-steam-sync-decky` (PR-5 through PR-8) is a separate,
+parallel stack that builds against the `--json` schema through a fake CLI
+and does not need this repo released first. Neither the original spec's
+device checklist (section 8) nor the plugin spec's PR-0 device probes
+(V1-V5, decky spec 2.2-2.3) have been run yet -- both are human gates that
+come after both stacks merge, not before this PR. Do not add code to a
+module ahead of its PR without checking the work plan first -- the
+modules are split the way they are so independent
 PRs can land in parallel.
 
 ### Working on the orchestration (`sync.py`)
