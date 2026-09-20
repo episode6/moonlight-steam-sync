@@ -121,7 +121,10 @@ def build_parser() -> argparse.ArgumentParser:
     sync_p.add_argument(
         "--dry-run",
         action="store_true",
-        help="print the plan (shortcuts to add, per-slot art source and URL) and write nothing",
+        help=(
+            "print the plan (shortcuts to add, replace, remove or park, per-slot art "
+            "source and URL) and write nothing"
+        ),
     )
     sync_p.add_argument(
         "--no-art", action="store_true", help="skip the art phase and go straight to the write"
@@ -131,7 +134,10 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         metavar="N",
-        help="add at most N new shortcuts this run (host-list order); the rest wait",
+        help=(
+            "add or replace at most N shortcuts this run (host-list order, a replacement "
+            "never split, IsHidden flips not counted); the rest wait"
+        ),
     )
     sync_p.add_argument(
         "--retry-missing",
