@@ -908,6 +908,17 @@ class Commit:
     backup: Path | None = None
     #: Steam was shut down and the file written, but ``steam -silent`` failed.
     relaunch_error: str = ""
+    #: The serialised file already matched the one on disk, so there was
+    #: nothing to write: either the plan changed nothing, or what it changed
+    #: serialised to the same bytes (a ``rematched`` replacement that keeps
+    #: its appid and icon path, decky spec 3.4.4). Every refusal raises, so
+    #: ``written or unchanged`` -- :attr:`applied` -- is "the in-memory file
+    #: is what is on disk now".
+    unchanged: bool = False
+
+    @property
+    def applied(self) -> bool:
+        return self.written or self.unchanged
 
     def describe(self, shortcuts_path: Path) -> str:
         if not self.written and not self.restarted and not self.relaunch_error:
@@ -975,7 +986,7 @@ def commit_shortcuts(
     runner = runner or ProcessRunner()
     changed = shortcuts_file.changed
     if not changed and not art_written:
-        return Commit()
+        return Commit(unchanged=True)
 
     running = steam.is_running(runner)
     if running and not config.restart_steam:
@@ -986,9 +997,9 @@ def commit_shortcuts(
                 "kept and picked up on the next restart; quit Steam and rerun, or drop "
                 "--no-restart-steam / set restart_steam = true."
             )
-        return Commit()
+        return Commit(unchanged=True)
 
-    result = Commit()
+    result = Commit(unchanged=not changed)
     with sigint_deferred():
         if running:
             print("shutting down Steam (Ctrl-C is deferred until it is back up)", file=out)
@@ -1115,13 +1126,18 @@ def _summary_event_fields(
     stop_reason: str | None = None,
 ) -> dict[str, Any]:
     written = commit is not None and commit.written
+    # A replacement or removal the commit applied counts even when the file
+    # did not change bytes (a `rematched` replacement that keeps its appid
+    # and icon path, decky spec 3.4.4); an addition always changes them, so
+    # `added` keeps its "0 when nothing was written" reading (spec 3.4.6).
+    applied = commit is not None and commit.applied
     resolved_stop_reason = stop_reason if stop_reason is not None else (
         summary.stop_reason if summary and summary.stopped_early else None
     )
     return {
         "added": len(plan.to_add) if written else 0,
-        "replaced": len(plan.to_replace) if written else 0,
-        "removed": len(plan.to_remove) if written else 0,
+        "replaced": len(plan.to_replace) if applied else 0,
+        "removed": len(plan.to_remove) if applied else 0,
         "filled": summary.filled if summary is not None else 0,
         "missing": summary.missing if summary is not None else 0,
         "unmatched": summary.unmatched if summary is not None else [],
@@ -1454,18 +1470,21 @@ def _final_summary(plan: Plan, summary: RunSummary | None, commit: Commit) -> li
     )
     # Only ever appended when the plan holds such a change, so a run with
     # none of the new flags prints exactly the v0.2.0 line (decky spec 3.11).
-    written = commit.written
+    # These count what the commit *applied*, not what changed bytes: a
+    # `rematched` replacement that keeps its appid and icon path serialises
+    # to the same file, and its art was still deleted and re-fetched.
+    applied = commit.applied
     if plan.to_replace:
-        line += f", replaced {len(plan.to_replace) if written else 0}"
+        line += f", replaced {len(plan.to_replace) if applied else 0}"
     if plan.to_remove:
-        line += f", removed {len(plan.to_remove) if written else 0}"
+        line += f", removed {len(plan.to_remove) if applied else 0}"
     if plan.to_park:
-        line += f", parked {len(plan.to_park) if written else 0}"
+        line += f", parked {len(plan.to_park) if applied else 0}"
     if plan.to_unpark:
-        line += f", unparked {len(plan.to_unpark) if written else 0}"
+        line += f", unparked {len(plan.to_unpark) if applied else 0}"
     if plan.to_hide:
-        line += f", hidden {len(plan.to_hide) if written else 0}"
-    if plan.client_to_add is not None and written:
+        line += f", hidden {len(plan.to_hide) if applied else 0}"
+    if plan.client_to_add is not None and applied:
         line += ", added the Moonlight client shortcut"
     lines = [line]
     for loser, winner in plan.duplicates.items():
@@ -1482,7 +1501,7 @@ def _final_summary(plan: Plan, summary: RunSummary | None, commit: Commit) -> li
         + len(plan.to_hide)
         + (1 if plan.client_to_add is not None else 0)
     )
-    if other_changes and not commit.written:
+    if other_changes and not commit.applied:
         lines.append(
             f"{other_changes} planned replacement(s), removal(s) and IsHidden flip(s) were not "
             "written (see above)"

@@ -32,7 +32,8 @@ flags below are passed and no title has been pinned.
 - `match --defer-art`'s stale mark is now acted on: the next `sync`
   (with or without `--owned-apps`) replaces the title's art (old grid
   files deleted, new match fetched, one restart) and `art --force` clears
-  the mark.
+  the mark. Such a replacement counts as `replaced` even when it leaves
+  `shortcuts.vdf` byte-identical (same appid, same icon path).
 - `--owned-apps` refuses a `launch_options` template without `{name}`
   (exit 1, nothing touched): a hidden entry's name is the owned game's,
   so the launch options are the only way back to the Moonlight name.

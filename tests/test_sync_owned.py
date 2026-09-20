@@ -597,6 +597,51 @@ def test_a_plain_sync_acts_on_the_unpinned_placeholder(world, tmp_path, monkeypa
     assert "stale_art" not in cached
 
 
+def test_a_rematched_replacement_that_changes_no_bytes_still_counts_as_replaced(
+    world, tmp_path, monkeypatch
+):
+    """A ``rematched`` replacement keeps its appid, and when the new match's
+    icon lands at the same path the entry serialises byte-for-byte as it
+    was, so ``commit.written`` is false -- yet the pin's grid files were
+    deleted, the new art fetched and Steam restarted for it. The summary
+    counts what the commit *applied*: ``replaced 1`` on the final line and
+    in ``summary.replaced``, and no "were not written" line (decky spec
+    3.4.4). Unpinning a deferred pin back to the title's own match is the
+    everyday way to get here."""
+    host_publishes(tmp_path, monkeypatch, ["Elden Ring"])
+    assert world.run(["sync"]).code == 0
+    elden = entry(world, "Elden Ring")
+    before = world.shortcuts_path.read_bytes()
+    assert run_match(
+        world, ["match", "Elden Ring", "--steam", str(HOLLOW_STEAM), "--defer-art"]
+    ).code == 0
+    assert run_match(world, ["match", "Elden Ring", "--unpin", "--defer-art"]).code == 0
+    assert world.shortcuts_path.read_bytes() == before
+
+    result = world.run(["--json", "sync"])
+
+    assert result.code == 0, result.err
+    events = json_lines(result.out)
+    replace = next(e for e in events if e["event"] == "replace")
+    assert replace["reason"] == "rematched"
+    assert replace["old_appid"] == elden.appid and replace["new_appid"] == elden.appid
+    commit = next(e for e in events if e["event"] == "commit")
+    assert commit["written"] is False and commit["restarted"] is True
+    summary = next(e for e in events if e["event"] == "summary")
+    assert summary["replaced"] == 1 and summary["added"] == 0
+    assert world.shortcuts_path.read_bytes() == before
+    assert entry(world, "Elden Ring") == elden
+    assert grid_of(world, elden.appid) == expected_grid_files(elden.appid)
+    assert any(f"/apps/{ELDEN_STEAM}/" in url for url in result.calls)
+    assert not any(f"/apps/{HOLLOW_STEAM}/" in url for url in result.calls)
+    assert result.runner.shutdowns == 1
+    human = result.err.splitlines()
+    final = next(line for line in human if line.startswith("added 0 shortcut(s)"))
+    assert final.endswith(", replaced 1")
+    assert not any("were not written" in line for line in human)
+    assert "stale_art" not in cache_entry(world, "Elden Ring")
+
+
 def test_a_plain_no_art_sync_deletes_stale_art_but_keeps_the_flag(
     world, tmp_path, monkeypatch
 ):

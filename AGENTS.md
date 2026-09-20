@@ -200,7 +200,15 @@ independent PRs can land in parallel.
   done, a target is never overwritten -- so a crash between two
   replacements is finished by the rerun (`tests/test_sync_e2e_replacements.py`).
   The flag is cleared only once the art phase has actually run for the
-  title; never after an early stop and never under `--no-art`.
+  title; never after an early stop and never under `--no-art`. A
+  `rematched` replacement keeps its appid, so when the new icon lands at
+  the same path the file serialises byte-for-byte as before and
+  `commit.written` is false -- the art was still deleted, re-fetched and
+  Steam restarted for it, so the final line and `summary.replaced` count
+  what the commit *applied* (`Commit.applied`: written, or nothing to
+  write), never "replaced 0" with a "were not written" line for a change
+  that happened. `added` keeps its v0.2.0 "0 unless written" reading; an
+  addition always changes bytes.
 - **`IsHidden` is the one field edited in place**: parking, unparking and a
   `shortcut -> stream` flip that keeps the `AppName` all toggle it without
   a replacement, and `--limit` never counts a flip (it counts additions and
