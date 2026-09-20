@@ -24,7 +24,7 @@ import platform
 import sys
 from importlib import metadata
 from pathlib import Path
-from typing import TextIO
+from typing import Any, TextIO
 
 from moonlight_steam_sync import __version__, hosts, moonlight, steam, sync
 from moonlight_steam_sync.art.cli import (
@@ -92,6 +92,37 @@ def _add_owned_apps_flag(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_commit_flag(
+    parser: argparse.ArgumentParser, *, with_no_restart: bool = False
+) -> None:
+    """``--commit {restart,await-exit,refuse}`` (decky spec 3.5) and, on
+    ``sync``, the older ``--no-restart-steam`` it keeps as an alias of
+    ``refuse`` -- the two exclude each other."""
+    target: Any = parser
+    if with_no_restart:
+        target = parser.add_mutually_exclusive_group()
+    target.add_argument(
+        "--commit",
+        choices=list(sync.COMMIT_MODES),
+        default=None,
+        metavar="MODE",
+        help=(
+            "how shortcuts.vdf gets written while Steam runs: `restart` (shut Steam "
+            "down, write, start it again; the default unless restart_steam = false), "
+            "`await-exit` (wait up to 60 s for Steam to exit on its own, write the "
+            "moment it is gone, never start it; for the Decky plugin, which restarts "
+            "Steam itself from Game Mode) or `refuse` (exit 2 without writing; same "
+            "as --no-restart-steam)"
+        ),
+    )
+    if with_no_restart:
+        target.add_argument(
+            "--no-restart-steam",
+            action="store_true",
+            help="never stop or start Steam; exit 2 instead of writing while it runs",
+        )
+
+
 def _add_ignore_file_flag(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--ignore-file",
@@ -144,11 +175,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="re-query titles and slots whose 'nothing found' result is cached",
     )
-    sync_p.add_argument(
-        "--no-restart-steam",
-        action="store_true",
-        help="never stop or start Steam; exit 2 instead of writing while it runs",
-    )
+    _add_commit_flag(sync_p, with_no_restart=True)
     _add_ignore_file_flag(sync_p)
     _add_owned_apps_flag(sync_p)
     sync_p.add_argument(
@@ -191,6 +218,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="print the match chain and the URL tried for every slot",
     )
+    _add_commit_flag(art_p)
 
     list_p = sub.add_parser("list", help="what the host publishes: added / ignored / new")
     _add_common_host_flag(list_p)
@@ -258,6 +286,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="accept a name the host does not publish (yet) and no shortcut carries",
     )
+    _add_commit_flag(match_p)
 
     host_p = sub.add_parser("host", help="show or change the active Moonlight host (spec 3.12)")
     host_sub = host_p.add_subparsers(dest="host_action", required=True)
@@ -293,6 +322,7 @@ def build_parser() -> argparse.ArgumentParser:
             "made (`--all` takes it only when `exe` is this tool)"
         ),
     )
+    _add_commit_flag(remove_p)
     remove_p.set_defaults(_subparser=remove_p)
 
     launch_p = sub.add_parser("launch", help='exec moonlight stream <host> "Name"')
@@ -589,7 +619,9 @@ def main(
     if provider_factory is None:
 
         def provider_factory(config):  # noqa: E306 - the real, Steam-aware provider
-            return sync.steam_aware_provider(config, runner=deps.runner)
+            return sync.steam_aware_provider(
+                config, runner=deps.runner, mode=getattr(args, "commit", None)
+            )
 
     try:
         if args.command == "doctor":

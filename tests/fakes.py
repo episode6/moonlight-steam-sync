@@ -50,6 +50,12 @@ class FakeRunner(ProcessRunner):
     ``steam -shutdown`` makes it report "gone" two polls later, unless
     ``ignores_shutdown`` is set, in which case Steam never exits (the
     30 s timeout path). ``spawned`` records relaunches.
+
+    ``exits_after_polls=N`` is a Steam that goes away *on its own* after
+    the N-th ``pgrep`` (the Decky plugin's ``StartShutdown`` from Game
+    Mode, or the user quitting it), without any ``steam -shutdown``: what
+    ``--commit await-exit`` waits for (decky spec 3.5). ``polls`` counts
+    the ``pgrep`` calls so a test can see how often the wait looked.
     """
 
     def __init__(
@@ -58,6 +64,7 @@ class FakeRunner(ProcessRunner):
         running: bool = False,
         pgrep_missing: bool = False,
         ignores_shutdown: bool = False,
+        exits_after_polls: int | None = None,
     ) -> None:
         self.running = running
         self.pgrep_missing = pgrep_missing
@@ -66,7 +73,7 @@ class FakeRunner(ProcessRunner):
         self.spawned: list[list[str]] = []
         self.slept = 0.0
         self.clock = 0.0
-        self.shutdown_after_polls: int | None = None
+        self.shutdown_after_polls: int | None = exits_after_polls
         self._polls = 0
 
     def run(self, cmd, *, timeout: float = 10.0) -> subprocess.CompletedProcess:
@@ -95,6 +102,10 @@ class FakeRunner(ProcessRunner):
 
     def monotonic(self) -> float:
         return self.clock
+
+    @property
+    def polls(self) -> int:
+        return self._polls
 
     @property
     def shutdowns(self) -> int:

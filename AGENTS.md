@@ -86,7 +86,8 @@ moonlight_steam_sync/
     apply.py       write grid files for an appid (skip existing), set icon field
     cli.py         the `art`, `status`, `search` and `match` subcommands
   sync.py          the orchestration: list -> (resolve) -> plan (kinds, replacements, duplicates,
-                   parking, the client entry) -> art -> write -> restart; progress lines
+                   parking, the client entry) -> art -> write -> restart; progress lines;
+                   commit_shortcuts() and its three --commit modes
 ```
 
 `art/http.py` and `art/cli.py` are two small additions to the spec 3.4 map:
@@ -121,14 +122,32 @@ independent PRs can land in parallel.
 - **Never write `shortcuts.vdf` with Steam up.** Steam holds the file in
   memory and rewrites it on exit, so the edit is silently lost (spec 2.1).
   `sync.commit_shortcuts()` is the *only* path from an in-memory
-  `ShortcutsFile` to disk: it checks `steam.is_running()`, refuses with
-  `SteamRunningError` (exit 2) when `restart_steam` is false, and otherwise
-  does `steam -shutdown` -> wait -> write -> `steam -silent` with `SIGINT`
-  deferred across the window. `art` commits through it too
-  (`sync.steam_aware_provider`), so does `match`'s grid-and-icon reset
-  (`art/cli.cmd_match`), and the fallback writer in `art/apply.py`
-  refuses rather than writes when Steam is running. Do not add a second
-  writer.
+  `ShortcutsFile` to disk -- **one writer, three commit modes**
+  (`--commit`, decky spec 3.5; `mode=None` resolves to `restart` or
+  `refuse` from `restart_steam`, which is how every pre-flag call site
+  keeps v0.2.0's behaviour): it checks `steam.is_running()` and then
+  `refuse`s with `SteamRunningError` (exit 2), or `restart`s -- `steam
+  -shutdown` -> wait -> write -> `steam -silent` with `SIGINT` deferred
+  across the window -- or, in `await-exit` mode, emits
+  `awaiting-steam-exit` (the `on_awaiting` hook), polls `is_running()`
+  every 100 ms for up to 60 s (`AWAIT_EXIT_TIMEOUT_S`, read at call time)
+  and writes the instant Steam is gone, with `Commit.awaited_exit` set.
+  **`--commit await-exit` never starts Steam and never writes while it
+  runs**: the plugin takes the client down from Game Mode and
+  gamescope-session brings it back (decky spec 2.3); still up at the
+  deadline is `SteamRunningError(AWAIT_EXIT_TIMED_OUT)`, exit 2, file
+  untouched. That wait is *interruptible* (decky spec 3.13 A2: the tool
+  has not touched Steam, so there is nothing to protect) -- `SIGINT`
+  there is exit 130 with the file untouched and no `commit` event -- and
+  only the write itself (backup rotation plus `os.replace`) sits inside
+  `sigint_deferred()`. Steam not running writes at once in every mode,
+  and an art-only run (no file change) never waits. `art` commits through
+  the same function (`sync.steam_aware_provider(mode=)`, whose writer
+  reads the provider's `commit_out` / `on_awaiting_exit` so `art --json`
+  keeps the writer's human lines off stdout), so does `match`'s
+  grid-and-icon reset (`art/cli.cmd_match`), and the fallback writer in
+  `art/apply.py` refuses rather than writes when Steam is running. Do not
+  add a second writer.
 - **Owned = exe match, not name match.** `ShortcutsFile.owned(config.exe)`
   compares the unquoted `Exe` by realpath (spec 3.3). That is what adopts the
   SteamTinkerLaunch-era entries and what keeps foreign shortcuts (an
@@ -149,7 +168,9 @@ independent PRs can land in parallel.
   does nothing at all when the serialised file is unchanged and no art was
   newly written this run (`RunSummary.written`, which excludes `kept`
   slots). A second `sync` over a finished library makes zero HTTP calls, no
-  write and no restart.
+  write and no restart. New art alone restarts Steam in `restart` mode
+  only; `await-exit` returns `commit` `written: false` at once and leaves
+  that restart to the plugin (decky spec 3.5 step 7).
 - **The `icon` field follows the file on disk.** `art.apply.patch_icon()`
   stores the bare absolute path (the way Steam's own UI writes it) and only
   repoints a field that is empty or dangling; a field that names an existing

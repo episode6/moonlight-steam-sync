@@ -26,6 +26,7 @@ from moonlight_steam_sync import version as _pkg_version
 from moonlight_steam_sync.art.apply import (
     ArtTarget,
     RunSummary,
+    SteamShortcutProvider,
     TargetProvider,
     TargetsUnavailable,
     default_target_provider,
@@ -171,6 +172,12 @@ def cmd_art(
     if found is None:
         return EXIT_USAGE_OR_CONFIG
     provider, targets = found
+    if isinstance(provider, SteamShortcutProvider):
+        # The real provider's writer (sync.steam_aware_provider) reports
+        # through this command's streams: its human lines beside the art
+        # progress, and the await-exit wait as an event (spec 3.4.6).
+        provider.commit_out = art_out
+        provider.on_awaiting_exit = _awaiting_hook(reporter)
     # The Moonlight client entry never gets art (decky spec 3.4.5: no
     # lookups for "Moonlight").
     targets = [target for target in targets if not target.client]
@@ -263,10 +270,14 @@ def cmd_art(
         reporter.error(f"art: {exc}", EXIT_STEAM_RUNNING)
         return EXIT_STEAM_RUNNING
     except KeyboardInterrupt:
-        reporter.event("summary", **_art_summary_event_fields(summary, EXIT_SIGINT))
-        reporter.error(
-            "interrupted while writing shortcuts.vdf; rerun the same command", EXIT_SIGINT
+        # Reachable only through the interruptible `--commit await-exit`
+        # wait (decky spec 3.13 A2): the write itself defers SIGINT, so
+        # the file is untouched and the next run only writes.
+        reporter.event(
+            "summary",
+            **_art_summary_event_fields(summary, EXIT_SIGINT, stop_reason="interrupted"),
         )
+        reporter.error("interrupted; resume with the same command", EXIT_SIGINT)
         return EXIT_SIGINT
     if summary.written and not _restarted(provider):
         print("restart Steam to see the new artwork", file=err)
@@ -280,6 +291,17 @@ def cmd_art(
 def _restarted(provider: TargetProvider) -> bool:
     """Whether the provider's commit already bounced Steam (the sync writer says)."""
     return bool(getattr(provider, "restarted_steam", False))
+
+
+def _awaiting_hook(reporter: Reporter) -> Callable[[float], None]:
+    """The ``awaiting-steam-exit`` event (spec 3.4.6) for a writer's
+    ``on_awaiting``; the same shape as ``sync.awaiting_hook`` (which cannot
+    be imported here: ``sync`` imports this module)."""
+
+    def emit(timeout_s: float) -> None:
+        reporter.event("awaiting-steam-exit", timeout_s=int(timeout_s))
+
+    return emit
 
 
 def _commit_event_fields(provider: TargetProvider) -> dict[str, Any]:
@@ -299,11 +321,21 @@ def _commit_event_fields(provider: TargetProvider) -> dict[str, Any]:
     }
 
 
-def _art_summary_event_fields(summary: RunSummary, exit_code: int) -> dict[str, Any]:
+def _art_summary_event_fields(
+    summary: RunSummary, exit_code: int, *, stop_reason: str | None = None
+) -> dict[str, Any]:
     """``art``'s ``summary`` event (spec 3.4.6): the key set ``sync`` uses
     minus ``added_by_kind`` (a ``sync``-only key, decky spec 3.13 A3), with
     ``added``/``replaced``/``removed`` always 0 -- ``art`` never adds,
-    replaces or removes a shortcut."""
+    replaces or removes a shortcut. ``stop_reason`` overrides the summary's
+    own: a Ctrl-C during the ``--commit await-exit`` wait ends a run whose
+    art phase *completed*, and the event still has to say
+    ``"interrupted"`` (spec 3.4.6, decky spec 3.13 A2) while keeping the
+    real ``filled``/``missing``/``unmatched`` counts."""
+    if stop_reason is None:
+        stopped_early, resolved_stop_reason = summary.stopped_early, summary.stop_reason or None
+    else:
+        stopped_early, resolved_stop_reason = True, stop_reason
     return {
         "added": 0,
         "replaced": 0,
@@ -313,8 +345,8 @@ def _art_summary_event_fields(summary: RunSummary, exit_code: int) -> dict[str, 
         "unmatched": summary.unmatched,
         "duplicates": {},
         "pending": 0,
-        "stopped_early": summary.stopped_early,
-        "stop_reason": summary.stop_reason or None,
+        "stopped_early": stopped_early,
+        "stop_reason": resolved_stop_reason,
         "exit": exit_code,
     }
 
@@ -834,11 +866,21 @@ def cmd_match(
         write_out = reporter.err if reporter.json else reporter.out
         try:
             commit = sync.commit_shortcuts(
-                library.file, config=config, runner=deps.runner, out=write_out
+                library.file,
+                config=config,
+                runner=deps.runner,
+                out=write_out,
+                mode=getattr(args, "commit", None),
+                on_awaiting=sync.awaiting_hook(reporter),
             )
         except steam.SteamRunningError as exc:
             reporter.error(f"match: {exc}", EXIT_STEAM_RUNNING)
             return EXIT_STEAM_RUNNING
+        except KeyboardInterrupt:
+            # The await-exit wait is interruptible (decky spec 3.13 A2):
+            # no pin, no write, no grid file touched.
+            reporter.error(f"match: {sync.RESUME_HINT}", EXIT_SIGINT)
+            return EXIT_SIGINT
         # The same `commit` event `remove` emits for the same sequence, so a
         # --json consumer can see `restarted` / `relaunch_error` here too.
         reporter.event("commit", **sync._commit_event_fields(commit))

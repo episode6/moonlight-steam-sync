@@ -7,12 +7,30 @@ project uses [semantic versioning](https://semver.org/).
 ## [Unreleased]
 
 The first slices of the Decky-plugin CLI work
-(`~/specs/moonlight-steam-sync/decky-plugin.md`, PR-1 to PR-3): additive
+(`~/specs/moonlight-steam-sync/decky-plugin.md`, PR-1 to PR-4): additive
 and optional, so every command's behaviour is unchanged when none of the
 flags below are passed and no title has been pinned.
 
 ### Added
 
+- `--commit {restart,await-exit,refuse}` on `sync`, `art`, `remove` and
+  `match`: how `shortcuts.vdf` gets written while Steam runs. `restart`
+  is today's shutdown-write-relaunch (and now forces it over
+  `restart_steam = false`), `refuse` is `--no-restart-steam` under a new
+  name (`sync` keeps the old flag; the two exclude each other), and
+  `await-exit` is for the Decky plugin in Game Mode: when there is
+  something to write and Steam is running, the tool prints that it is
+  waiting (`awaiting-steam-exit` under `--json`, `{"timeout_s": 60}`),
+  polls every 100 ms for up to 60 s for Steam to exit on its own, writes
+  the moment it is gone and never starts it (`commit` has `restarted:
+  false`). Still up after 60 s is exit 2 with the file untouched (`steam
+  did not exit; shortcuts.vdf not written`); Ctrl-C during the wait is
+  exit 130 at once with the file untouched (`summary.stop_reason`
+  `interrupted`), and only the write itself defers it. Steam not running
+  writes immediately, and an art-only run (new grid files, no file
+  change) returns `commit` `written: false` without waiting so the plugin
+  decides about the restart. `art --json` now keeps the writer's
+  "shutting down Steam" line on stderr with the rest of its progress.
 - `sync --owned-apps PATH` and `list --owned-apps PATH`: a JSON file of
   the Steam games the account owns (the Decky plugin writes it; its
   `steamid3` must match the Steam user `sync` writes to, else exit 1 with
