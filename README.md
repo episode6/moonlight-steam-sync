@@ -149,17 +149,19 @@ landscape art that shares its name.
 ## Usage
 
 ```
-moonlight-steam-sync [--json] sync      [--host H] [--dry-run] [--no-art] [--limit N] [--retry-missing] [--no-restart-steam] [--ignore-file PATH]
+moonlight-steam-sync [--json] sync      [--host H] [--dry-run] [--no-art] [--limit N] [--retry-missing] [--no-restart-steam]
+                                        [--ignore-file PATH] [--owned-apps PATH] [--client-shortcut] [--park-unpublished]
 moonlight-steam-sync [--json] art       [--force] [--retry-missing] [--only "Name"] [--explain]
-moonlight-steam-sync [--json] list      [--host H] [--cached] [--ignore-file PATH]
+moonlight-steam-sync [--json] list      [--host H] [--cached] [--ignore-file PATH] [--owned-apps PATH]
 moonlight-steam-sync [--json] status    [--host H] [--owned-apps PATH]
 moonlight-steam-sync [--json] search    "term" [--owned-apps PATH]
 moonlight-steam-sync [--json] match     "Name" (--steam APPID | --sgdb ID | --none | --unpin) [--defer-art] [--force-name]
 moonlight-steam-sync [--json] host      show [--host H] | set NAME | clear
 moonlight-steam-sync [--json] ignore    --all | "Name"... [--ignore-file PATH]
-moonlight-steam-sync [--json] remove    --all | "Name"...
+moonlight-steam-sync [--json] remove    (--all | "Name"...) [--client] | --client
 moonlight-steam-sync [--json] launch    [--host H] "Name" [-- extra moonlight flags]
-moonlight-steam-sync [--json] doctor    [--host H] [--owned-apps PATH] [--ignore-file PATH]
+moonlight-steam-sync [--json] client    [-- extra moonlight flags]
+moonlight-steam-sync [--json] doctor    [--host H] [--owned-apps PATH] [--ignore-file PATH] [--client-shortcut]
 ```
 
 `--json`, before the subcommand, switches every command to the
@@ -251,6 +253,77 @@ moonlight-steam-sync host clear     # back to config.toml's `host`
 `--host` on `list`, `status`, `ignore` or `doctor` is per-invocation and
 never touches the state file -- only `host set` does.
 
+Shortcuts do not record a host: an entry carries only the Moonlight name,
+and `launch` picks the host at stream time, so a title both hosts publish
+under the same name is one entry, one set of art and one pin whichever
+host is active. `sync --park-unpublished` makes the library reflect the
+active host: every owned shortcut the host does not publish is *parked*
+(hidden in place -- same appid, art, pin and controller layout kept) and
+every published one is shown again, so switching hosts and back costs one
+`moonlight list`, no downloads and one Steam restart, never a re-import.
+`status` reports `parked` per entry and `list --owned-apps` labels a
+parked title `parked`. Without the flag, entries the host no longer
+publishes stay visible as before. `remove --all` still removes parked
+entries (ownership is by `exe`, hidden or not). When two hosts publish the
+same game under different names, `list` says so (`same-game-as`) rather
+than making two tiles; the fix is to align the name on the host side or
+pin one of them.
+
+### Games you own on Steam
+
+With `--owned-apps PATH` (a JSON file of the Steam games the account
+owns, `{"version": 1, "steamid3": 12345678, "apps": {"1245620": "ELDEN
+RING", ...}}`, written by the Decky plugin before every run), `sync` stops
+making a visible tile for a title the account already owns and makes a
+**hidden** shortcut for it instead. The plugin puts a *Stream* button on
+the real game's own library page that launches that hidden entry, so the
+library shows one tile per game and the streamed copy still runs as its
+own Steam app with its own controller layout, resolution override and
+Steam Input settings.
+
+- A title counts as owned when it resolves -- by an exact match, an
+  `[overrides]` entry or a `match` pin, never a fuzzy one -- to a Steam
+  appid in the file. A fuzzy hit is right often enough for artwork, but a
+  wrong Stream button on the real game's page is worse than an extra
+  tile, so fuzzy matches keep their visible shortcut; pin them with
+  `match` to promote them.
+- The hidden entry is named exactly as the owned game (no `name_suffix`),
+  because Steam Input keys a shortcut's layout by its lowercased name and
+  offers a same-named shortcut the retail game's community layouts. Its
+  launch options still carry the Moonlight name, so it is owned, adopted,
+  listed and removed like any other entry, and it gets all five art
+  slots like any other.
+- Ownership can change: drop an appid from the file (or add one, or
+  change its display name) and the next `sync` *replaces* the entry --
+  a rename is never an in-place edit, since the appid is derived from
+  the name -- renaming its five grid files to the new appid so the flip
+  downloads nothing. `--limit` counts replacements and additions
+  together and never splits a replacement; `--dry-run` prints each one
+  as `replace  <name>: <old> [visible] -> <new> [hidden] (kind-changed)`.
+- Two Moonlight titles that resolve to the same owned game (a Steam and a
+  GOG copy, say) are almost always a wrong match, so the first in host
+  order gets the hidden entry and the other gets **no tile at all**: it
+  is reported as a `duplicate` naming the winner, an entry it already had
+  is removed with its art, and pinning it to `--none` (or to a different
+  match) on the next run gives it its own tile again.
+- To reach titles ahead of the plan, `sync --owned-apps` resolves every
+  published title first (cache-first, so a finished library still makes
+  zero calls) -- also under `--no-art`, which then fetches nothing. The
+  file's `steamid3` must be the Steam user `sync` would write to; a stale
+  file from another account is exit `1` with nothing touched.
+- `sync --client-shortcut` keeps one hidden shortcut named `Moonlight`
+  that runs `moonlight-steam-sync client`, which just opens the Moonlight
+  client (no host, no game) -- the plugin's *Open Moonlight* button needs
+  a Steam-launched app in Game Mode. Its `Exe` is always this tool, even
+  when `exe` is your own script, and it is identified by that plus its
+  launch options, never by name; it gets no artwork. `remove --client`
+  deletes it; `remove --all` deletes it only when `exe` is the tool
+  itself (ownership is still by `exe`). `doctor --client-shortcut` says
+  whether it exists.
+
+Without `--owned-apps` every title is a visible shortcut and nothing
+above applies; a `--park-unpublished` run alone still parks.
+
 ### Artwork
 
 Each shortcut gets the five files Steam's own library UI reads out of
@@ -307,13 +380,16 @@ match, so `match` deletes its five grid files and clears its icon, with the
 same one-restart write as `remove` (exit `2`, with nothing changed at all,
 when Steam is running and `restart_steam = false`); the next `sync` fetches
 the new match's art. `--defer-art` leaves the files and Steam alone and
-only marks the title's art as stale in the cache, for a later `sync` to
-replace; that mark outlives the entry it was set on, so `--unpin
---defer-art` (which leaves an `"how": "unpinned"` placeholder in the
-cache) and the re-resolution that follows still end with the art marked
-stale. The name must be one the host publishes (as of its last `list` or
-`sync`) or one that already has a shortcut; `--force-name` pins a title the
-host will publish later.
+only marks the title's art as stale in the cache: the next `sync` (plain
+or `--owned-apps`; the plan reads the cache either way) treats that as a
+*rematched* replacement -- the old grid files are deleted and the new
+match's art fetched in the normal single-restart flow -- and `art --force`
+clears the mark too, having refilled every slot. The mark outlives the entry it was
+set on, so `--unpin --defer-art` (which leaves an `"how": "unpinned"`
+placeholder in the cache) and the re-resolution that follows still end
+with the art marked stale. The name must be one the host publishes (as
+of its last `list` or `sync`) or one that already has a shortcut;
+`--force-name` pins a title the host will publish later.
 
 A large Moonlight library (500+ titles) means a first `sync` can be a couple
 thousand HTTP calls; at the default pacing that is on the order of 10-20
@@ -348,7 +424,7 @@ and so on).
 
 | command | events, in order |
 |---|---|
-| `sync` | `start`, `plan`, `title`\*, `commit`\*, `summary`, (`error`) |
+| `sync` | `start`, `plan`, `replace`\*, `title`\*, `commit`\*, `summary`, (`error`) |
 | `art` | `start`, `title`\*, `commit`, `summary`, (`error`) |
 | `list` | `start`, `app`\*, `end`, (`error`) |
 | `status` | `start`, `entry`\*, `end`, (`error`) |
@@ -357,14 +433,20 @@ and so on).
 | `host` | `start`, `host`, (`error`) |
 | `ignore` | `start`, `end`, (`error`) |
 | `remove` | `start`, `commit`, `summary`, (`error`) |
-| `launch` | `start`, `exec`, (`error`) |
+| `launch`, `client` | `start`, `exec`, (`error`) |
 | `doctor` | `start`, `end`, (`error`) |
 
 `title`/`app`/`entry` all carry a `match` object shaped
 `{steam_appid, sgdb_id, matched_name, how}` (or `null`), and a `slots`
 mapping whose values are `steam`, `sgdb`, `kept`, `missing`, `skipped` or
 `cached-miss` -- the JSON names for what the human progress line prints as
-`official`/`community`/etc. See
+`official`/`community`/etc. `title.kind` and `app.kind` are the title's
+kind (`stream`, `shortcut`, `ignored`, `parked`, `duplicate`; an `app`
+that lost to another title carries `duplicate_of`), `plan` counts the
+kinds and the replacements, park flips and removals it will make, one
+`replace` event precedes the art phase per replacement, and `sync`'s
+`summary` reports `replaced`, `removed`, `duplicates` and
+`added_by_kind` (`{"stream": n, "shortcut": n}`, new entries only). See
 `~/specs/moonlight-steam-sync/decky-plugin.md` section 3.4.6 for the full
 schema (every event's exact keys) if you are building another consumer of
 this stream; it is versioned (`schema: 1`) and additive-only.

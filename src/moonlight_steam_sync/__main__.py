@@ -37,6 +37,7 @@ from moonlight_steam_sync.art.cli import (
 from moonlight_steam_sync.config import (
     DEFAULT_KEY_FILE,
     ConfigError,
+    default_exe,
     load_config,
     load_ignore_file,
     load_owned_apps,
@@ -44,6 +45,7 @@ from moonlight_steam_sync.config import (
     toml_host,
 )
 from moonlight_steam_sync.reporting import Reporter
+from moonlight_steam_sync.shortcuts import ShortcutsError, ShortcutsFile
 
 # Exit codes (spec 3.3).
 EXIT_OK = 0
@@ -78,6 +80,18 @@ def _add_common_host_flag(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--host", help="Moonlight host name (overrides config)")
 
 
+def _add_owned_apps_flag(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--owned-apps",
+        metavar="PATH",
+        help=(
+            "a JSON file of the Steam games this account owns (written by the Decky "
+            "plugin, spec 3.4.1); a title that matches one gets a hidden shortcut "
+            "named after the owned game instead of a visible tile"
+        ),
+    )
+
+
 def _add_ignore_file_flag(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--ignore-file",
@@ -107,7 +121,10 @@ def build_parser() -> argparse.ArgumentParser:
     sync_p.add_argument(
         "--dry-run",
         action="store_true",
-        help="print the plan (shortcuts to add, per-slot art source and URL) and write nothing",
+        help=(
+            "print the plan (shortcuts to add, replace, remove or park, per-slot art "
+            "source and URL) and write nothing"
+        ),
     )
     sync_p.add_argument(
         "--no-art", action="store_true", help="skip the art phase and go straight to the write"
@@ -117,7 +134,10 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         metavar="N",
-        help="add at most N new shortcuts this run (host-list order); the rest wait",
+        help=(
+            "add or replace at most N shortcuts this run (host-list order, a replacement "
+            "never split, IsHidden flips not counted); the rest wait"
+        ),
     )
     sync_p.add_argument(
         "--retry-missing",
@@ -130,6 +150,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="never stop or start Steam; exit 2 instead of writing while it runs",
     )
     _add_ignore_file_flag(sync_p)
+    _add_owned_apps_flag(sync_p)
+    sync_p.add_argument(
+        "--client-shortcut",
+        action="store_true",
+        help=(
+            "make sure one hidden \"Moonlight\" shortcut exists that opens the Moonlight "
+            "client itself (`client`), for launching it from Game Mode (spec 3.4.5)"
+        ),
+    )
+    sync_p.add_argument(
+        "--park-unpublished",
+        action="store_true",
+        help=(
+            "hide (in place, art and pins kept) every owned shortcut this host does not "
+            "publish, and show published ones again; for switching between hosts (spec 3.12)"
+        ),
+    )
 
     art_p = sub.add_parser("art", help="(re)apply art to owned shortcuts")
     art_p.add_argument(
@@ -163,6 +200,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="serve the per-host list cache instead of running moonlight (spec 3.12)",
     )
     _add_ignore_file_flag(list_p)
+    _add_owned_apps_flag(list_p)
 
     status_p = sub.add_parser(
         "status", help="owned shortcuts and which art slots each has on disk"
@@ -188,7 +226,7 @@ def build_parser() -> argparse.ArgumentParser:
             "which you can paste into config.toml to make the pin permanent (this tool "
             "never writes it). When the title has a shortcut, its grid files are deleted "
             "and its icon cleared now (one Steam restart, like `remove`) unless "
-            "--defer-art leaves that to the next `sync`."
+            "--defer-art leaves that to the next `sync` (or `art --force`)."
         ),
     )
     match_p.add_argument("name", metavar="NAME", help="the Moonlight app name, exactly")
@@ -211,8 +249,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--defer-art",
         action="store_true",
         help=(
-            "only write the cache (marking the art stale); the next `sync` replaces the "
-            "art, so Steam is not restarted now"
+            "only write the cache (marking the art stale); the next `sync` (or "
+            "`art --force`) replaces the art, so Steam is not restarted now"
         ),
     )
     match_p.add_argument(
@@ -241,14 +279,32 @@ def build_parser() -> argparse.ArgumentParser:
     _add_ignore_file_flag(ignore_p)
 
     remove_p = sub.add_parser("remove", help="delete owned shortcuts and their grid files")
-    remove_group = remove_p.add_mutually_exclusive_group(required=True)
+    # `--all` and NAME... exclude each other; `--client` combines with either
+    # or stands alone, so the "one of them is required" check lives in
+    # main() (argparse cannot express that with one group).
+    remove_group = remove_p.add_mutually_exclusive_group()
     remove_group.add_argument("--all", action="store_true", help="every owned shortcut")
     remove_group.add_argument("names", nargs="*", default=[], metavar="NAME")
+    remove_p.add_argument(
+        "--client",
+        action="store_true",
+        help=(
+            "also delete the hidden \"Moonlight\" client shortcut `sync --client-shortcut` "
+            "made (`--all` takes it only when `exe` is this tool)"
+        ),
+    )
+    remove_p.set_defaults(_subparser=remove_p)
 
     launch_p = sub.add_parser("launch", help='exec moonlight stream <host> "Name"')
     _add_common_host_flag(launch_p)
     launch_p.add_argument("name")
     launch_p.add_argument("extra", nargs=argparse.REMAINDER)
+
+    client_p = sub.add_parser(
+        "client",
+        help="exec the Moonlight client itself (what the hidden \"Moonlight\" shortcut runs)",
+    )
+    client_p.add_argument("extra", nargs=argparse.REMAINDER)
 
     doctor_p = sub.add_parser("doctor", help="report the environment this tool will run in")
     _add_common_host_flag(doctor_p)
@@ -256,6 +312,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--owned-apps", metavar="PATH", help="a plugin-written owned-apps JSON file (spec 3.4.1)"
     )
     _add_ignore_file_flag(doctor_p)
+    doctor_p.add_argument(
+        "--client-shortcut",
+        action="store_true",
+        help="report whether the hidden \"Moonlight\" client shortcut exists (spec 3.4.7)",
+    )
 
     return parser
 
@@ -282,6 +343,23 @@ def _steam_user_line(root: Path | None) -> str:
     label = user.account_name or user.persona_name
     who = f"{user.steamid3}{f' ({label})' if label else ''}"
     return f"steam user:    {who} -> {user.shortcuts_path}"
+
+
+def _client_shortcut_line(root: Path | None) -> str:
+    """``client shortcut: present [appid]`` / ``absent`` (spec 3.4.7);
+    ``unknown (...)`` when the library cannot be read, since ``doctor``
+    never fails over what it reports on."""
+    if root is None:
+        return "client shortcut: unknown (no Steam directory)"
+    try:
+        user = steam.pick_user(root)
+        shortcuts_file = ShortcutsFile.read(user.shortcuts_path)
+    except (steam.SteamError, ShortcutsError) as exc:
+        return f"client shortcut: unknown ({exc})"
+    entry = shortcuts_file.client_entry(default_exe())
+    if entry is None:
+        return "client shortcut: absent"
+    return f"client shortcut: present [{entry.appid}]"
 
 
 def _session_kind() -> str:
@@ -379,6 +457,9 @@ def cmd_doctor(
         else:
             lines.append(f"ignore file: {ignore_path} ({len(ignored)} names)")
 
+    if getattr(args, "client_shortcut", False):
+        lines.append(_client_shortcut_line(steam_root))
+
     for line in lines:
         reporter.line(line)
     reporter.event("end", count=len(lines))
@@ -438,6 +519,53 @@ def cmd_launch(
     return EXIT_OK  # pragma: no cover -- unreachable when execvp succeeds
 
 
+def cmd_client(
+    args: argparse.Namespace, *, out: TextIO | None = None, err: TextIO | None = None
+) -> int:
+    """`exec` into the Moonlight client itself, no host or app (decky spec 3.4.5).
+
+    This is what the hidden "Moonlight" shortcut ``sync --client-shortcut``
+    writes runs, so *Open Moonlight* in Game Mode is a Steam-launched app.
+    The host is resolved (flag-less: state file, then config) only so the
+    ``exec`` event can say which one applies; Moonlight's GUI needs none.
+    Never returns on success. Under ``--json``: ``start`` then ``exec``.
+    """
+    out = out or sys.stdout
+    err = err or sys.stderr
+    json_mode = bool(getattr(args, "json", False))
+    reporter = Reporter(out, err, json=json_mode, command="client", version=_version())
+    reporter.start()
+
+    cfg = load_config(args)
+    binary = moonlight.find_binary()
+    if binary is None:
+        reporter.error(
+            "client: moonlight CLI not found (native binary, flatpak, or MOONLIGHT_BIN)",
+            EXIT_MOONLIGHT_UNREACHABLE,
+        )
+        return EXIT_MOONLIGHT_UNREACHABLE
+
+    # With no positional before it, argparse hands REMAINDER the `--`
+    # separator itself (`client -- --fullscreen`); Moonlight must not see it.
+    extra = list(args.extra)
+    if extra[:1] == ["--"]:
+        extra = extra[1:]
+
+    reporter.event("exec", host=cfg.host or None)
+    # See cmd_launch: flush before execvp replaces the process image.
+    out.flush()
+    err.flush()
+    try:
+        moonlight.run_client(extra)
+    except moonlight.MoonlightNotFoundError as exc:
+        reporter.error(f"client: {exc}", EXIT_MOONLIGHT_UNREACHABLE)
+        return EXIT_MOONLIGHT_UNREACHABLE
+    except OSError as exc:
+        reporter.error(f"client: failed to run moonlight: {exc}", EXIT_MOONLIGHT_UNREACHABLE)
+        return EXIT_MOONLIGHT_UNREACHABLE
+    return EXIT_OK  # pragma: no cover -- unreachable when execvp succeeds
+
+
 def main(
     argv: list[str] | None = None,
     *,
@@ -453,6 +581,10 @@ def main(
     """
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.command == "remove" and not (args.all or args.names or args.client):
+        # The v0.2.0 (--all | NAME ...) group requirement, restated so that
+        # --client can stand alone or combine with either (exit 2, as before).
+        args._subparser.error("one of the arguments --all NAME --client is required")
     deps = deps or sync.Deps()
     if provider_factory is None:
 
@@ -464,6 +596,8 @@ def main(
             return cmd_doctor(args)
         if args.command == "launch":
             return cmd_launch(args)
+        if args.command == "client":
+            return cmd_client(args)
         if args.command == "art":
             return cmd_art(args, load_config(args), provider_factory=provider_factory)
         if args.command == "status":

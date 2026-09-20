@@ -88,6 +88,38 @@ class Reporter:
         self.event("title", **fields)
 
 
+#: Title kinds (decky spec 3.2): the ``kind`` vocabulary of the ``title``,
+#: ``app`` and ``entry`` events. Shared here because ``sync`` and
+#: ``art/cli`` both need it and ``sync`` imports ``art/cli``.
+KIND_STREAM = "stream"
+KIND_SHORTCUT = "shortcut"
+KIND_IGNORED = "ignored"
+KIND_PARKED = "parked"
+KIND_DUPLICATE = "duplicate"
+KIND_CLIENT = "client"
+
+#: ``Match.how`` values trusted enough to hide a tile behind a Stream button
+#: (decky spec 3.2): a fuzzy hit is right often enough for artwork, but a
+#: wrong Stream button on the real game's page is worse than an extra tile.
+STREAM_HOWS = frozenset(
+    {"override", "pinned", "sgdb:exact-verified", "sgdb:exact", "steamstore:exact"}
+)
+
+
+def is_stream_match(match: Any, owned: Any) -> bool:
+    """Whether *match* (a :class:`~moonlight_steam_sync.art.resolve.Match`
+    or ``None``) makes its title kind ``stream`` against the ``--owned-apps``
+    map *owned* (decky spec 3.2): a Steam appid the account owns, reached by
+    an exact, override or pinned match -- never a fuzzy one."""
+    return bool(
+        owned
+        and match is not None
+        and match.steam_appid is not None
+        and match.steam_appid in owned
+        and match.how in STREAM_HOWS
+    )
+
+
 def match_json(match: Any) -> dict[str, Any] | None:
     """``{steam_appid, sgdb_id, matched_name, how}``, or ``None`` (spec 3.4.6).
 
@@ -121,4 +153,16 @@ def slot_json_value(source: str) -> str:
     return _SLOT_JSON_SOURCE.get(source, source)
 
 
-__all__ = ["Reporter", "match_json", "slot_json_value"]
+__all__ = [
+    "KIND_CLIENT",
+    "KIND_DUPLICATE",
+    "KIND_IGNORED",
+    "KIND_PARKED",
+    "KIND_SHORTCUT",
+    "KIND_STREAM",
+    "STREAM_HOWS",
+    "Reporter",
+    "is_stream_match",
+    "match_json",
+    "slot_json_value",
+]

@@ -45,8 +45,14 @@ from moonlight_steam_sync import steam
 from moonlight_steam_sync.art.http import HardStop
 from moonlight_steam_sync.art.resolve import Match, Resolver
 from moonlight_steam_sync.art.select import ICON, SLOTS, Selector, Slot, existing_slot_file
-from moonlight_steam_sync.config import Config
-from moonlight_steam_sync.shortcuts import Shortcut, ShortcutsError, ShortcutsFile, unquote
+from moonlight_steam_sync.config import Config, default_exe
+from moonlight_steam_sync.shortcuts import (
+    CLIENT_APP_NAME,
+    Shortcut,
+    ShortcutsError,
+    ShortcutsFile,
+    unquote,
+)
 
 #: Slot outcomes, as they appear in the progress lines.
 SOURCE_KEPT = "kept"  # a file was already there (spec 6.9)
@@ -76,6 +82,13 @@ class ArtTarget:
     #: (``False`` / ``""``) is fine.
     hidden: bool = False
     app_name: str = ""
+    #: The title's kind (decky spec 3.2) for ``sync``'s ``title`` event;
+    #: ``sync.art_targets`` fills it from the plan, ``art`` derives its own
+    #: from ``hidden`` and never reads this.
+    kind: str = "shortcut"
+    #: The Moonlight client shortcut (decky spec 3.4.5): ``status`` reports
+    #: it, ``art`` skips it (no lookups for "Moonlight").
+    client: bool = False
 
 
 class TargetProvider(Protocol):
@@ -196,17 +209,38 @@ class SteamShortcutProvider:
         return self._file, self._grid_dir
 
     def targets(self) -> Sequence[ArtTarget]:
+        """The owned entries, plus the Moonlight client entry (decky spec
+        3.4.5) whoever ``config.exe`` is -- it is identified by its launch
+        options and the tool's own exe, and ``status`` has to report it so
+        the plugin can find its appid; ``art`` skips it (``client=True``)."""
         shortcuts_file, grid_dir = self._load()
-        return [
-            ArtTarget(
-                name=entry.moonlight_name(self._config.launch_options, self._config.name_suffix),
-                appid=entry.appid,
-                grid_dir=grid_dir,
-                hidden=bool(entry.is_hidden),
-                app_name=entry.app_name,
+        tool_exe = default_exe()
+        entries = list(shortcuts_file.owned(self._config.exe))
+        client_entry = shortcuts_file.client_entry(tool_exe)
+        if client_entry is not None and not any(entry is client_entry for entry in entries):
+            entries.append(client_entry)
+        targets: list[ArtTarget] = []
+        for entry in entries:
+            client = entry is client_entry
+            kind = "client" if client else ("stream" if entry.is_hidden else "shortcut")
+            targets.append(
+                ArtTarget(
+                    name=(
+                        CLIENT_APP_NAME
+                        if client
+                        else entry.moonlight_name(
+                            self._config.launch_options, self._config.name_suffix
+                        )
+                    ),
+                    appid=entry.appid,
+                    grid_dir=grid_dir,
+                    hidden=bool(entry.is_hidden),
+                    app_name=entry.app_name,
+                    kind=kind,
+                    client=client,
+                )
             )
-            for entry in shortcuts_file.owned(self._config.exe)
-        ]
+        return targets
 
     def set_icon(self, appid: int, icon_path: Path) -> None:
         shortcuts_file, _ = self._load()

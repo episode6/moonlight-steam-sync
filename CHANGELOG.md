@@ -7,11 +7,56 @@ project uses [semantic versioning](https://semver.org/).
 ## [Unreleased]
 
 The first slices of the Decky-plugin CLI work
-(`~/specs/moonlight-steam-sync/decky-plugin.md`, PR-1 and PR-2): additive
+(`~/specs/moonlight-steam-sync/decky-plugin.md`, PR-1 to PR-3): additive
 and optional, so every command's behaviour is unchanged when none of the
 flags below are passed and no title has been pinned.
 
 ### Added
+
+- `sync --owned-apps PATH` and `list --owned-apps PATH`: a JSON file of
+  the Steam games the account owns (the Decky plugin writes it; its
+  `steamid3` must match the Steam user `sync` writes to, else exit 1 with
+  nothing touched). A published title that resolves to one of them by an
+  exact, override or pinned match gets a **hidden** shortcut named exactly
+  as the owned game (no suffix) instead of a visible tile, so the plugin
+  can put a Stream button on the real game's page; fuzzy matches stay
+  visible. `sync` resolves every published title before planning (cache
+  first; also under `--no-art`, which then downloads nothing). A change
+  of ownership or display name is a *replacement* that renames the
+  entry's five grid files to the new appid and downloads nothing;
+  `--limit` counts replacements and additions together and never splits
+  one; `--dry-run` prints each replacement. Two titles resolving to the
+  same owned game yield one hidden entry and a reported `duplicate` with
+  no tile (an entry it had is removed with its art); pinning it to
+  `--none` restores its tile.
+- `match --defer-art`'s stale mark is now acted on: the next `sync`
+  (with or without `--owned-apps`) replaces the title's art (old grid
+  files deleted, new match fetched, one restart) and `art --force` clears
+  the mark. Such a replacement counts as `replaced` even when it leaves
+  `shortcuts.vdf` byte-identical (same appid, same icon path).
+- `--owned-apps` refuses a `launch_options` template without `{name}`
+  (exit 1, nothing touched): a hidden entry's name is the owned game's,
+  so the launch options are the only way back to the Moonlight name.
+- `list` labels a `duplicate` title `ignored` (it gets no tile) and
+  prints `duplicate-of: <winner>` under it; a visible `stream` entry
+  that `sync --owned-apps` hides again in place is reported as
+  `to hide` / `hidden`, apart from parking.
+- `sync --park-unpublished`: hides in place every owned shortcut the
+  active host does not publish (same appid; art, pin and layout kept) and
+  shows published ones again, so switching hosts and back is one write
+  and no downloads. `status` reports `parked` per entry and `list
+  --owned-apps` labels parked titles.
+- `sync --client-shortcut`, the `client` subcommand, `remove --client` and
+  `doctor --client-shortcut`: one hidden `Moonlight` shortcut that opens
+  the Moonlight client itself (no host, no game), for launching it from
+  Game Mode. It always runs this tool, gets no artwork, is identified by
+  its launch options rather than its name, and is deleted by `remove
+  --all` only when `exe` is the tool.
+- `--json`: `plan` carries the kind counts, replacements, park flips,
+  removals and `duplicates`; a `replace` event precedes the art phase per
+  replacement; `title.kind`, `app.kind` and `app.duplicate_of` are real;
+  `entry.parked` / `entry.client` are real; `sync`'s `summary` gains
+  `replaced`, `removed`, `duplicates` and `added_by_kind`.
 
 - `--json` (before the subcommand): switches stdout to one JSON object per
   line, moving human progress to stderr. See the README's "Machine-readable
