@@ -267,10 +267,10 @@ After `4` or `130`, rerun the same command to continue.
 
 ### Multiple hosts
 
-`launch`, `sync`, `list`, `ignore`, `status`, `client` and `match` all
-resolve which host to talk to the same way, in this order: the `--host`
-flag, then an *active host* set with `host set NAME`, then `host` in
-`config.toml`. The active host is a small state file
+Every command that needs a host resolves it the same way, in this order:
+the `--host` flag (on the commands that have one, listed below), then an
+*active host* set with `host set NAME`, then `host` in `config.toml`. The
+active host is a small state file
 (`$XDG_STATE_HOME/moonlight-steam-sync/active-host`, not `config.toml`), so
 switching hosts never edits the config:
 
@@ -282,8 +282,9 @@ moonlight-steam-sync host clear     # back to config.toml's `host`
 
 `--host` on any command that accepts it (`sync`, `list`, `status`,
 `ignore`, `launch`, `doctor`, `host show`) is per-invocation and never
-touches the state file -- only `host set` does. `client` and `match`
-resolve the host the same way but take no `--host` flag of their own.
+touches the state file -- only `host set` does. `client` and `match` take
+no `--host` flag of their own, so for them the order starts at the active
+host.
 
 Shortcuts do not record a host: an entry carries only the Moonlight name,
 and `launch` picks the host at stream time, so a title both hosts publish
