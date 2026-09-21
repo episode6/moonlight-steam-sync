@@ -168,8 +168,8 @@ def slot_json_value(source: str) -> str:
 
 
 __all__ = [
-    "KIND_CLIENT",
     "DEFAULT_HOST_APPS",
+    "KIND_CLIENT",
     "KIND_DUPLICATE",
     "KIND_HOST_APP",
     "KIND_IGNORED",

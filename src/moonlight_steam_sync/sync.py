@@ -629,6 +629,11 @@ def build_plan(
             taken[match.steam_appid] = (name, desired.appid)
         if entry is None:
             entry = shortcuts_file.by_appid(desired.appid)
+            if entry is not None and id(entry) in replaced_or_removed:
+                # That appid is on its way out with an earlier title's
+                # replacement (a `stream` entry turned `host-app`, decky
+                # spec 3.14): this title needs an entry of its own.
+                entry = None
             if entry is not None:
                 plan.existing_names.add(name)
         if stale:
@@ -654,8 +659,12 @@ def build_plan(
             # (owned-apps knowledge) -- not parked, the host publishes it;
             # a hidden `shortcut` entry is shown again only by
             # --park-unpublished, which is what parked it.
-            # A `host-app` entry (3.14) is hidden the same way, whatever
-            # name v0.2.0's adoption found it under.
+            # A `host-app` entry (3.14) is hidden the same way. Without
+            # --owned-apps that is whatever name v0.2.0's adoption found it
+            # under; with it, a misnamed entry never gets here -- it was a
+            # replacement above, as for a `shortcut` title, because the
+            # name it carries may be an owned game's (a former `stream`
+            # entry), whose appid the real Stream entry needs.
             if hidden_wanted and not hidden_now and (
                 kind == KIND_HOST_APP or (same_name and naming_active)
             ):
@@ -678,10 +687,16 @@ def build_plan(
             plan.to_replace.append(change)
             if change.name in stale_names:
                 plan.stale.add(change.name)
-    for change in plan.pending:
+    for change in list(plan.pending):
         if isinstance(change, Replacement):
             # Not this run: the old entry stays exactly as it is.
             replaced_or_removed.discard(id(change.old))
+            # ... and so does its appid: an addition that was waiting for
+            # it waits with it.
+            blocked = [a for a in plan.to_add if a.shortcut.appid == change.old.appid]
+            for addition in blocked:
+                plan.to_add.remove(addition)
+                plan.pending.append(addition)
 
     unparking = {id(entry) for entry in plan.to_unpark}
     for entry in owned_entries:

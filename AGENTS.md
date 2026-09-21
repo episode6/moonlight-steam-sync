@@ -277,8 +277,14 @@ PRs can land in parallel.
   (`reporting.is_default_host_app`: trimmed, casefolded -- the same rule the
   plugin's panel buttons use, so change both or neither) keep `name +
   name_suffix` and therefore their appid, which is the whole point: a
-  visible one goes in `Plan.to_hide` like an unhidden `stream` entry, never
-  in `to_replace`, so art, icon and controller layout survive. The kind is
+  visible one goes in `Plan.to_hide` like an unhidden `stream` entry, not
+  in `to_replace`, so art, icon and controller layout survive. (The one
+  replacement is the one a `shortcut` title gets too: under `--owned-apps`
+  an entry whose `AppName` is *not* `name + name_suffix` is renamed --
+  it may be a former `stream` entry carrying an owned game's name, and so
+  the appid that game's real Stream entry needs. Every plugin install has
+  synced with `--owned-apps` since v0.3.0, so its two tiles already carry
+  the canonical name and are only ever hidden in place.) The kind is
   decided before `stream` (it never enters `taken`, so it is never a
   duplicate's winner or loser) and after `ignored`; it is never in
   `parked_names` or `to_unpark`; `status` applies the `stream` parked rule

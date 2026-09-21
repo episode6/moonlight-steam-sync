@@ -310,6 +310,32 @@ def test_art_calls_a_hidden_host_app_by_its_kind_not_stream(desk, tmp_path, monk
     assert kinds == {DESKTOP: "host-app", "Fan Made Adventure": "shortcut"}
 
 
+def test_with_owned_apps_a_misnamed_entry_is_renamed_like_a_shortcut_title(
+    seeded, tmp_path, monkeypatch
+):
+    """Spec 3.14 "With a renamed entry": under ``--owned-apps`` names are
+    normalised for every kind. A ``Desktop`` that used to be a ``stream``
+    entry carries the owned game's name -- and the appid that game's real
+    Stream entry needs -- so it is replaced, never hidden under that name."""
+    host_publishes(tmp_path, monkeypatch, [DESKTOP, "Elden Ring"])
+    owned = owned_file(tmp_path, {ELDEN_STEAM: ELDEN_OWNED})
+    seed_cache(
+        seeded,
+        Match(name=DESKTOP, steam_appid=ELDEN_STEAM, matched_name=ELDEN_OWNED, how="pinned"),
+    )
+    assert seeded.run(["sync", "--no-art", "--owned-apps", owned]).code == 0
+    assert entry(seeded, DESKTOP).app_name == ELDEN_OWNED  # the stream entry won the game
+
+    result = seeded.run(["sync", "--no-art", "--owned-apps", owned, FLAG])
+
+    assert result.code == 0, result.err
+    assert f"replace  {DESKTOP}: {ELDEN_OWNED} [hidden] -> {DESKTOP}{SUFFIX} [hidden]" in result.out
+    desktop = entry(seeded, DESKTOP)
+    assert desktop.app_name == f"{DESKTOP}{SUFFIX}" and desktop.is_hidden == 1
+    elden = entry(seeded, "Elden Ring")
+    assert elden.app_name == ELDEN_OWNED and elden.appid != desktop.appid
+
+
 def test_build_plan_hides_an_entry_adopted_under_another_name(desk, tmp_path, monkeypatch):
     """Without ``--owned-apps`` an owned entry is adopted under any
     ``AppName`` (v0.2.0); the flag hides that entry in place just the same."""
