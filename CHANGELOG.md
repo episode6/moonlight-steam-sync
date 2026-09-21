@@ -6,7 +6,9 @@ project uses [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
-Prepared for `v0.4.0` (a new flag, so a minor bump).
+## [0.4.0] - 2026-09-20
+
+A new flag, so a minor bump.
 
 ### Added
 
