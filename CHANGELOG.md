@@ -6,7 +6,33 @@ project uses [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
-Nothing yet.
+Prepared for `v0.4.0` (a new flag, so a minor bump).
+
+### Added
+
+- **`--hide-host-apps`** on `sync`, `list` and `status`: the two apps every
+  Sunshine / Apollo host publishes out of the box, `Desktop` and `Steam Big
+  Picture` (matched trimmed, case-insensitively), become a new title kind,
+  `host-app`, written as a **hidden** shortcut. The Decky plugin launches
+  them from buttons on its Quick Access panel, and with this flag those
+  buttons replace the two library tiles. The entry keeps its ordinary
+  `AppName` (name + `name_suffix`) and so its appid: an existing tile is
+  hidden in place (`N to hide`, never a `replace`), with its artwork, icon
+  and controller layout untouched, and it still gets artwork. `ignore`
+  wins over the kind; the kind wins over `stream`, so a `Desktop` that
+  matches an owned game never takes that game's Stream button or makes a
+  `duplicate`. `--park-unpublished` parks an unpublished one like any
+  entry and leaves a published one hidden; without the flag the two are
+  ordinary shortcuts again and `sync --park-unpublished` shows them.
+  `status --hide-host-apps` no longer reports such an entry as `parked`
+  unless the active host stopped publishing it. Off by default: a CLI user
+  without the plugin's buttons would lose their only launcher for the two
+  (decky spec 3.14).
+- `--json`: `"host-app"` as a `title.kind` / `app.kind` value, and the keys
+  `plan.host_app`, `summary.added_by_kind["host-app"]` and
+  `entry.host_app` -- all only when `--hide-host-apps` is passed, so every
+  other run's events are unchanged key for key and `schema` stays 1. `art
+  --json` reports a hidden default host app as `host-app`, not `stream`.
 
 ## [0.3.1] - 2026-09-20
 

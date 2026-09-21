@@ -74,12 +74,14 @@ from moonlight_steam_sync.config import (
 from moonlight_steam_sync.reporting import (
     KIND_CLIENT,
     KIND_DUPLICATE,
+    KIND_HOST_APP,
     KIND_IGNORED,
     KIND_PARKED,
     KIND_SHORTCUT,
     KIND_STREAM,
     STREAM_HOWS,
     Reporter,
+    is_default_host_app,
     is_stream_match,
     match_json,
     slot_json_value,
@@ -374,8 +376,9 @@ class Plan:
     #: the next run (``--limit`` counts both together, decky spec 6.13).
     pending: list[Addition | Replacement] = field(default_factory=list)
     limit: int | None = None
-    #: Moonlight name -> ``stream`` / ``shortcut`` / ``duplicate`` for every
-    #: published, non-ignored name (decky spec 3.4.2).
+    #: Moonlight name -> ``stream`` / ``shortcut`` / ``duplicate`` /
+    #: ``host-app`` for every published, non-ignored name (decky spec 3.4.2,
+    #: 3.14).
     kinds: dict[str, str] = field(default_factory=dict)
     to_replace: list[Replacement] = field(default_factory=list)
     #: Losing Moonlight name -> winning Moonlight name (decky spec 3.3).
@@ -388,7 +391,8 @@ class Plan:
     to_park: list[Shortcut] = field(default_factory=list)
     to_unpark: list[Shortcut] = field(default_factory=list)
     #: Published ``stream`` entries that are visible right now (someone
-    #: unhid them): hidden again in place by their kind. Not parking --
+    #: unhid them) and, under ``--hide-host-apps``, visible ``host-app``
+    #: entries (decky spec 3.14): hidden in place by their kind. Not parking --
     #: parking is for names the active host does not publish (decky spec
     #: 3.12) -- so reported apart from ``to_park`` and never in the
     #: ``plan`` event's park counts.
@@ -410,6 +414,10 @@ class Plan:
     #: spec 3.4.4). A stale title held back by ``--limit`` is not in here,
     #: because its old entry -- and its old art -- stay this run.
     stale: set[str] = field(default_factory=set)
+    #: ``--hide-host-apps`` was passed (decky spec 3.14): the only time the
+    #: ``plan`` / ``summary`` events carry their ``host-app`` counts, so
+    #: every other run's JSON is v0.3.1's, key for key.
+    hide_host_apps: bool = False
 
     def label(self, app: moonlight.App) -> str:
         if app in self.ignored or app.name in self.duplicates:
@@ -438,6 +446,10 @@ class Plan:
     @property
     def shortcut_count(self) -> int:
         return sum(1 for kind in self.kinds.values() if kind == KIND_SHORTCUT)
+
+    @property
+    def host_app_count(self) -> int:
+        return sum(1 for kind in self.kinds.values() if kind == KIND_HOST_APP)
 
     @property
     def parked_count(self) -> int:
@@ -488,6 +500,7 @@ def build_plan(
     owned: Mapping[int, str] | None = None,
     park_unpublished: bool = False,
     client_shortcut: bool = False,
+    hide_host_apps: bool = False,
 ) -> Plan:
     """Diff the host list against the library (spec 3.7, decky spec 3.4.2).
 
@@ -530,6 +543,13 @@ def build_plan(
     the Moonlight client entry (3.4.5) is added when missing; it is always
     listed under ``adopted`` (kind ``client``) when present, whoever
     ``config.exe`` is.
+
+    With ``hide_host_apps`` (decky spec 3.14) a published name that is one
+    of the host's two default apps is kind ``host-app`` -- decided on the
+    name alone and *before* ``stream``, so it never takes an owned game and
+    is never a duplicate. Its entry is a ``shortcut`` entry with
+    ``IsHidden = 1``: same ``AppName``, same appid, so an existing visible
+    one is hidden in place (:attr:`Plan.to_hide`), never replaced.
     """
     tool_exe = default_exe()
     client = shortcuts_file.client_entry(tool_exe)
@@ -542,7 +562,13 @@ def build_plan(
         owned_by_name.setdefault(name, entry)
 
     matches = matches or {}
-    plan = Plan(host=config.host, apps=list(apps), limit=limit, client=client)
+    plan = Plan(
+        host=config.host,
+        apps=list(apps),
+        limit=limit,
+        client=client,
+        hide_host_apps=hide_host_apps,
+    )
     if client_shortcut and client is None:
         plan.client_to_add = client_shortcut_entry()
     ignore = set(config.ignore) | set(ignore_extra)
@@ -556,7 +582,7 @@ def build_plan(
     naming_active = owned is not None
     # v0.2.0 adopted an owned entry under any name and never touched
     # IsHidden; both only change once a flag says what the kinds are.
-    flips_active = naming_active or park_unpublished
+    flips_active = naming_active or park_unpublished or hide_host_apps
     for app in apps:
         name = app.name
         if name in seen:
@@ -570,7 +596,9 @@ def build_plan(
         match = matches.get(name)
         stale = bool(match is not None and match.stale_art)
         kind, owned_name = KIND_SHORTCUT, None
-        if is_stream_match(match, owned):
+        if hide_host_apps and is_default_host_app(name):
+            kind = KIND_HOST_APP
+        elif is_stream_match(match, owned):
             assert owned is not None and match is not None and match.steam_appid is not None
             kind, owned_name = KIND_STREAM, owned[match.steam_appid]
         entry = owned_by_name.get(name)
@@ -626,7 +654,11 @@ def build_plan(
             # (owned-apps knowledge) -- not parked, the host publishes it;
             # a hidden `shortcut` entry is shown again only by
             # --park-unpublished, which is what parked it.
-            if same_name and hidden_wanted and not hidden_now and naming_active:
+            # A `host-app` entry (3.14) is hidden the same way, whatever
+            # name v0.2.0's adoption found it under.
+            if hidden_wanted and not hidden_now and (
+                kind == KIND_HOST_APP or (same_name and naming_active)
+            ):
                 plan.to_hide.append(entry)
             elif same_name and hidden_now and not hidden_wanted and park_unpublished:
                 plan.to_unpark.append(entry)
@@ -693,6 +725,10 @@ def new_shortcut(
     layout by its lowercased name, so a same-named shortcut is offered the
     retail game's layouts for free. The launch options still carry the
     Moonlight name, which is what ownership and the plan recover.
+
+    A ``host-app`` title (decky spec 3.14) gets the ``shortcut`` entry,
+    hidden: the same ``AppName`` and so the same appid, which is what keeps
+    an existing tile's art and controller layout when it is hidden.
     """
     if kind == KIND_STREAM:
         assert owned_name is not None
@@ -704,12 +740,15 @@ def new_shortcut(
         )
         shortcut.is_hidden = 1
         return shortcut
-    return Shortcut.create(
+    shortcut = Shortcut.create(
         app_name=app_name_for(name, config.name_suffix),
         exe=config.exe,
         start_dir=config.start_dir,
         launch_options=render_launch_options(config.launch_options, name),
     )
+    if kind == KIND_HOST_APP:
+        shortcut.is_hidden = 1
+    return shortcut
 
 
 def client_shortcut_entry() -> Shortcut:
@@ -1199,6 +1238,8 @@ class SyncOptions:
     park_unpublished: bool = False
     #: ``--client-shortcut`` (decky spec 3.4.5).
     client_shortcut: bool = False
+    #: ``--hide-host-apps`` (decky spec 3.14).
+    hide_host_apps: bool = False
     #: ``--commit`` (decky spec 3.5); ``None`` lets ``restart_steam`` decide.
     commit: str | None = None
 
@@ -1211,6 +1252,7 @@ class SyncOptions:
             retry_missing=bool(getattr(args, "retry_missing", False)),
             park_unpublished=bool(getattr(args, "park_unpublished", False)),
             client_shortcut=bool(getattr(args, "client_shortcut", False)),
+            hide_host_apps=bool(getattr(args, "hide_host_apps", False)),
             commit=getattr(args, "commit", None),
         )
 
@@ -1219,7 +1261,7 @@ def _plan_event_fields(plan: Plan) -> dict[str, Any]:
     """``plan`` event fields (spec 3.4.6): the header's counts plus the
     kinds (``stream``/``shortcut`` = published titles of that kind this run,
     ``parked`` = parked entries after the run) and the duplicates map."""
-    return {
+    fields = {
         "host": plan.host,
         "published": len(plan.apps),
         "ignored": len(plan.ignored),
@@ -1236,6 +1278,9 @@ def _plan_event_fields(plan: Plan) -> dict[str, Any]:
         "parked": plan.parked_count,
         "duplicates": dict(plan.duplicates),
     }
+    if plan.hide_host_apps:
+        fields["host_app"] = plan.host_app_count
+    return fields
 
 
 def _added_by_kind(plan: Plan, *, written: bool) -> dict[str, int]:
@@ -1243,6 +1288,8 @@ def _added_by_kind(plan: Plan, *, written: bool) -> dict[str, int]:
     kind -- never a replacement -- and, like ``added``, zeros when nothing
     was written."""
     counts = {KIND_STREAM: 0, KIND_SHORTCUT: 0}
+    if plan.hide_host_apps:
+        counts[KIND_HOST_APP] = 0
     if written:
         for item in plan.to_add:
             kind = plan.kinds.get(item.app.name, KIND_SHORTCUT)
@@ -1453,6 +1500,7 @@ def cmd_sync(
         matches=matches,
         owned=owned,
         park_unpublished=options.park_unpublished,
+        hide_host_apps=options.hide_host_apps,
         client_shortcut=options.client_shortcut,
     )
     reporter.line(plan.header())
@@ -1741,7 +1789,8 @@ def _dry_run(
             reporter.line(f"  unpark   {name} [{entry.appid}]")
         for entry in plan.to_hide:
             name = entry.moonlight_name(config.launch_options, config.name_suffix)
-            reporter.line(f"  hide     {name} [{entry.appid}] (stream entry, hidden by its kind)")
+            what = "host app" if plan.kinds.get(name) == KIND_HOST_APP else "stream entry"
+            reporter.line(f"  hide     {name} [{entry.appid}] ({what}, hidden by its kind)")
         for item in plan.pending:
             name = item.app.name if isinstance(item, Addition) else item.name
             reporter.line(f"  pending  {name} (beyond --limit {plan.limit})")
@@ -1896,7 +1945,13 @@ def cmd_list(
     if owned is not None:
         matches = {app.name: match_cache.get(app.name) for app in apps}
     plan = build_plan(
-        config, apps, library.file, ignore_extra=ignore_extra, matches=matches, owned=owned
+        config,
+        apps,
+        library.file,
+        ignore_extra=ignore_extra,
+        matches=matches,
+        owned=owned,
+        hide_host_apps=bool(getattr(args, "hide_host_apps", False)),
     )
     other_hosts = _other_hosts_apps(hosts_directory, config.host)
     seen: set[str] = set()
@@ -2140,6 +2195,7 @@ __all__ = [
     "COMMIT_RESTART",
     "KIND_CLIENT",
     "KIND_DUPLICATE",
+    "KIND_HOST_APP",
     "KIND_IGNORED",
     "KIND_PARKED",
     "KIND_SHORTCUT",

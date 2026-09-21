@@ -39,7 +39,14 @@ from moonlight_steam_sync.art.select import SLOTS, Selector
 from moonlight_steam_sync.art.sgdb import SgdbClient, steam_appid_from_game
 from moonlight_steam_sync.art.steamstore import SteamStoreClient
 from moonlight_steam_sync.config import Config, ConfigError, load_owned_apps, owned_apps_steamid3
-from moonlight_steam_sync.reporting import Reporter, is_stream_match, match_json, slot_json_value
+from moonlight_steam_sync.reporting import (
+    KIND_HOST_APP,
+    Reporter,
+    is_default_host_app,
+    is_stream_match,
+    match_json,
+    slot_json_value,
+)
 from moonlight_steam_sync.shortcuts import app_name_for
 
 if TYPE_CHECKING:  # ``sync`` imports this module, so only for annotations.
@@ -127,8 +134,12 @@ def _resolve_targets(
 
 def _art_title_event_fields(index: int, total: int, result: Any) -> dict[str, Any]:
     """``title`` event fields for ``art`` (spec 3.4.6): kind comes from
-    ``IsHidden`` alone -- ``art`` has no plan to know anything else from."""
+    ``IsHidden`` alone -- ``art`` has no plan to know anything else from --
+    except that a hidden default host app is never ``stream`` (decky spec
+    3.14; the provider tells them apart by ``AppName``)."""
     kind = "stream" if result.target.hidden else "shortcut"
+    if result.target.hidden and result.target.kind == KIND_HOST_APP:
+        kind = KIND_HOST_APP
     if result.skipped:
         return {
             "index": index,
@@ -379,7 +390,9 @@ def cmd_status(
     ``stream`` entry only when the cache says the host does not publish it
     (no cache, no claim). With ``--owned-apps`` the kind is the plan's
     (decky spec 3.2); without it a hidden entry whose ``AppName`` is not
-    ``<name><suffix>`` is taken for a ``stream`` one.
+    ``<name><suffix>`` is taken for a ``stream`` one. With
+    ``--hide-host-apps`` (decky spec 3.14) a hidden default host app is
+    hidden by its kind too, so it follows the ``stream`` rule.
     """
     out = out or sys.stdout
     err = err or sys.stderr
@@ -387,6 +400,7 @@ def cmd_status(
     reporter = Reporter(out, err, json=json_mode, command="status", version=_pkg_version())
     reporter.start()
 
+    hide_host_apps = bool(getattr(args, "hide_host_apps", False))
     owned: dict[int, str] | None = None
     owned_apps_flag = getattr(args, "owned_apps", None)
     if owned_apps_flag:
@@ -451,6 +465,13 @@ def cmd_status(
         reporter.line(f"{target.name} [{target.appid}]: {slots}")
         match_entry = None if target.client else match_cache.get(target.name)
         published = not target.client and target.name in published_names
+        # `entry.host_app` rides on the flag (decky spec 3.14), so a run
+        # without it emits v0.3.1's keys exactly.
+        host_app_key = (
+            {"host_app": not target.client and is_default_host_app(target.name)}
+            if hide_host_apps
+            else {}
+        )
         reporter.event(
             "entry",
             name=target.name,
@@ -464,6 +485,7 @@ def cmd_status(
                 config,
                 published=published,
                 cache_known=host_cache is not None,
+                hide_host_apps=hide_host_apps,
             ),
             published=published,
             client=target.client,
@@ -472,6 +494,7 @@ def cmd_status(
             stale_art=bool(match_entry is not None and match_entry.stale_art),
             cached=host_cache is not None,
             cached_when=host_cache.when if host_cache is not None else None,
+            **host_app_key,
         )
         entry_count += 1
     reporter.line(f"{len(targets)} shortcut(s), {complete} with every slot filled")
@@ -487,10 +510,13 @@ def _is_parked(
     *,
     published: bool,
     cache_known: bool,
+    hide_host_apps: bool = False,
 ) -> bool:
     """``entry.parked`` for ``status`` (decky spec 3.12); see :func:`cmd_status`."""
     if target.client or not target.hidden:
         return False
+    if hide_host_apps and is_default_host_app(target.name):
+        return cache_known and not published
     if owned is not None:
         stream_kind = is_stream_match(match, owned)
     else:

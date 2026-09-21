@@ -185,10 +185,11 @@ landscape art that shares its name.
 ```
 moonlight-steam-sync [--json] sync      [--host H] [--dry-run] [--no-art] [--limit N] [--retry-missing]
                                         [--commit MODE | --no-restart-steam] [--ignore-file PATH] [--owned-apps PATH]
-                                        [--client-shortcut] [--park-unpublished]
+                                        [--client-shortcut] [--park-unpublished] [--hide-host-apps]
 moonlight-steam-sync [--json] art       [--force] [--retry-missing] [--only "Name"] [--explain] [--commit MODE]
 moonlight-steam-sync [--json] list      [--host H] [--cached] [--ignore-file PATH] [--owned-apps PATH]
-moonlight-steam-sync [--json] status    [--host H] [--owned-apps PATH]
+                                        [--hide-host-apps]
+moonlight-steam-sync [--json] status    [--host H] [--owned-apps PATH] [--hide-host-apps]
 moonlight-steam-sync [--json] search    "term" [--owned-apps PATH]
 moonlight-steam-sync [--json] match     "Name" (--steam APPID | --sgdb ID | --none | --unpin) [--defer-art] [--force-name]
                                         [--commit MODE]
@@ -367,6 +368,38 @@ Steam Input settings.
 Without `--owned-apps` every title is a visible shortcut and nothing
 above applies; a `--park-unpublished` run alone still parks.
 
+### Desktop and Steam Big Picture
+
+Every Sunshine / Apollo host publishes two apps out of the box, `Desktop`
+and `Steam Big Picture`. By default they are titles like any other: a
+visible shortcut each (or nothing, if you `ignore` them). `sync
+--hide-host-apps` writes them as **hidden** shortcuts instead, for a
+launcher that starts them some other way -- the Decky plugin puts a button
+for each on its Quick Access panel, and those buttons replace the two
+library tiles:
+
+- The names are matched trimmed and case-insensitively, and the rule wins
+  over everything but `ignore`: a `Desktop` that happens to match a game
+  you own never becomes a Stream button.
+- The hidden entry keeps its ordinary name (`Desktop (streaming)`), and
+  therefore its appid, so hiding an existing tile is a flip of one field
+  in place (`2 to hide` in the plan, never a `replace`): its artwork and,
+  above all, the controller layout you chose for it are untouched, and it
+  still gets artwork like any other entry (Recent Games and the overlay
+  show the running shortcut).
+- Pass the flag to `list` and `status` too when you pass it to `sync`:
+  `list` then reports the kind as `host-app`, and `status` stops calling
+  the hidden entry parked (it is hidden by its kind, like a Stream
+  button's entry, and only parked when the active host does not publish
+  it).
+- To get the tiles back, stop passing the flag and run `sync
+  --park-unpublished` once: without the flag the two are ordinary
+  shortcuts again, and a published shortcut that is hidden gets shown. A
+  plain `sync` never touches `IsHidden`, so it leaves them as they are.
+
+The flag is off by default on purpose: without the plugin's buttons the
+tiles are the only way to launch these two.
+
 ### Artwork
 
 Each shortcut gets the five files Steam's own library UI reads out of
@@ -487,12 +520,16 @@ and so on).
 mapping whose values are `steam`, `sgdb`, `kept`, `missing`, `skipped` or
 `cached-miss` -- the JSON names for what the human progress line prints as
 `official`/`community`/etc. `title.kind` and `app.kind` are the title's
-kind (`stream`, `shortcut`, `ignored`, `parked`, `duplicate`; an `app`
+kind (`stream`, `shortcut`, `ignored`, `parked`, `duplicate`, and
+`host-app` under `--hide-host-apps` only; an `app`
 that lost to another title carries `duplicate_of`), `plan` counts the
 kinds and the replacements, park flips and removals it will make, one
 `replace` event precedes the art phase per replacement, and `sync`'s
 `summary` reports `replaced`, `removed`, `duplicates` and
 `added_by_kind` (`{"stream": n, "shortcut": n}`, new entries only).
+`--hide-host-apps` adds three keys and only when it is passed, so every
+other run's events are unchanged key for key: `plan.host_app`,
+`added_by_kind["host-app"]` and, on `status`, `entry.host_app`.
 `awaiting-steam-exit` (`{"timeout_s": 60}`) appears only under `--commit
 await-exit`, the moment the tool starts waiting for Steam to exit; the
 `commit` that follows has `restarted: false`, and a wait that times out
@@ -530,6 +567,9 @@ drives:
 - **`--park-unpublished`** (see "Multiple hosts" above), so switching the
   plugin's active host hides what the other host does not publish instead
   of leaving stale tiles behind.
+- **`--hide-host-apps`** (see "Desktop and Steam Big Picture" above), from
+  the plugin release that replaces those two tiles with panel buttons
+  (it needs this CLI at v0.4.0 or later).
 - **`--commit await-exit`** (see "Steam must restart" above), because the
   plugin can only ask Steam to exit from Game Mode -- gamescope-session
   restarts the client on its own -- and must never start it itself.

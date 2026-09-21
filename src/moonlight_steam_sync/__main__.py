@@ -92,6 +92,19 @@ def _add_owned_apps_flag(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_hide_host_apps_flag(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--hide-host-apps",
+        action="store_true",
+        help=(
+            "treat the host's two default apps, \"Desktop\" and \"Steam Big Picture\", as "
+            "hidden shortcuts (same name, art and controller layout; just no library tile), "
+            "for a launcher that starts them another way, like the Decky plugin's panel "
+            "buttons (decky spec 3.14)"
+        ),
+    )
+
+
 def _add_commit_flag(
     parser: argparse.ArgumentParser, *, with_no_restart: bool = False
 ) -> None:
@@ -195,6 +208,8 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    _add_hide_host_apps_flag(sync_p)
+
     art_p = sub.add_parser("art", help="(re)apply art to owned shortcuts")
     art_p.add_argument(
         "--force",
@@ -229,6 +244,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_ignore_file_flag(list_p)
     _add_owned_apps_flag(list_p)
+    _add_hide_host_apps_flag(list_p)
 
     status_p = sub.add_parser(
         "status", help="owned shortcuts and which art slots each has on disk"
@@ -237,6 +253,8 @@ def build_parser() -> argparse.ArgumentParser:
     status_p.add_argument(
         "--owned-apps", metavar="PATH", help="a plugin-written owned-apps JSON file (spec 3.4.1)"
     )
+
+    _add_hide_host_apps_flag(status_p)
 
     search_p = sub.add_parser("search", help="find a Steam/SteamGridDB candidate for a title")
     search_p.add_argument("term")
