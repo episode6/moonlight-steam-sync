@@ -22,7 +22,7 @@ on top of that: a Decky Loader plugin,
 stops creating visible shortcuts for games the Deck's own Steam account
 already owns. Its CLI half shipped in `v0.3.0` behind new, additive
 flags (`--json`, `--owned-apps`, `host`, `search`, `match`, `--commit`,
-...), and `--hide-host-apps` (decky spec 3.14, unreleased, for `v0.4.0`)
+...), and `--hide-host-apps` (decky spec 3.14, released in `v0.4.0`)
 followed; every command's behaviour with none of those flags passed stays
 byte-identical to `v0.2.0`, the release before it started (spec 3.11).
 
