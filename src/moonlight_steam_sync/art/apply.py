@@ -46,11 +46,13 @@ from moonlight_steam_sync.art.http import HardStop
 from moonlight_steam_sync.art.resolve import Match, Resolver
 from moonlight_steam_sync.art.select import ICON, SLOTS, Selector, Slot, existing_slot_file
 from moonlight_steam_sync.config import Config, default_exe
+from moonlight_steam_sync.reporting import KIND_HOST_APP, is_default_host_app
 from moonlight_steam_sync.shortcuts import (
     CLIENT_APP_NAME,
     Shortcut,
     ShortcutsError,
     ShortcutsFile,
+    app_name_for,
     unquote,
 )
 
@@ -83,8 +85,8 @@ class ArtTarget:
     hidden: bool = False
     app_name: str = ""
     #: The title's kind (decky spec 3.2) for ``sync``'s ``title`` event;
-    #: ``sync.art_targets`` fills it from the plan, ``art`` derives its own
-    #: from ``hidden`` and never reads this.
+    #: ``sync.art_targets`` fills it from the plan; ``art`` derives its own
+    #: from ``hidden`` and only reads this for ``host-app`` (decky spec 3.14).
     kind: str = "shortcut"
     #: The Moonlight client shortcut (decky spec 3.4.5): ``status`` reports
     #: it, ``art`` skips it (no lookups for "Moonlight").
@@ -235,16 +237,23 @@ class SteamShortcutProvider:
         targets: list[ArtTarget] = []
         for entry in entries:
             client = entry is client_entry
+            name = (
+                CLIENT_APP_NAME
+                if client
+                else entry.moonlight_name(self._config.launch_options, self._config.name_suffix)
+            )
             kind = "client" if client else ("stream" if entry.is_hidden else "shortcut")
+            if (
+                kind == "stream"
+                and is_default_host_app(name)
+                and entry.app_name == app_name_for(name, self._config.name_suffix)
+            ):
+                # Hidden under its own name, not an owned game's: a default
+                # host app (decky spec 3.14), never a Stream button's entry.
+                kind = KIND_HOST_APP
             targets.append(
                 ArtTarget(
-                    name=(
-                        CLIENT_APP_NAME
-                        if client
-                        else entry.moonlight_name(
-                            self._config.launch_options, self._config.name_suffix
-                        )
-                    ),
+                    name=name,
                     appid=entry.appid,
                     grid_dir=grid_dir,
                     hidden=bool(entry.is_hidden),

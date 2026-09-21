@@ -97,6 +97,20 @@ KIND_IGNORED = "ignored"
 KIND_PARKED = "parked"
 KIND_DUPLICATE = "duplicate"
 KIND_CLIENT = "client"
+#: One of the host's two default apps, written hidden under
+#: ``--hide-host-apps`` (decky spec 3.14); never emitted without the flag.
+KIND_HOST_APP = "host-app"
+
+#: The two entries every Sunshine / Apollo host publishes out of the box
+#: (decky spec 3.14), casefolded. The Decky plugin's panel buttons look the
+#: same two names up the same way (trimmed, case-insensitive).
+DEFAULT_HOST_APPS = frozenset({"desktop", "steam big picture"})
+
+
+def is_default_host_app(name: str) -> bool:
+    """Whether the Moonlight app *name* is ``Desktop`` or ``Steam Big
+    Picture`` (decky spec 3.14): trimmed, case-insensitive."""
+    return name.strip().casefold() in DEFAULT_HOST_APPS
 
 #: ``Match.how`` values trusted enough to hide a tile behind a Stream button
 #: (decky spec 3.2): a fuzzy hit is right often enough for artwork, but a
@@ -154,13 +168,16 @@ def slot_json_value(source: str) -> str:
 
 
 __all__ = [
+    "DEFAULT_HOST_APPS",
     "KIND_CLIENT",
     "KIND_DUPLICATE",
+    "KIND_HOST_APP",
     "KIND_IGNORED",
     "KIND_PARKED",
     "KIND_SHORTCUT",
     "KIND_STREAM",
     "STREAM_HOWS",
+    "is_default_host_app",
     "Reporter",
     "is_stream_match",
     "match_json",

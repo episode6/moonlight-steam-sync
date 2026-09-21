@@ -22,7 +22,8 @@ on top of that: a Decky Loader plugin,
 stops creating visible shortcuts for games the Deck's own Steam account
 already owns. Its CLI half shipped in `v0.3.0` behind new, additive
 flags (`--json`, `--owned-apps`, `host`, `search`, `match`, `--commit`,
-...); every command's behaviour with none of those flags passed stays
+...), and `--hide-host-apps` (decky spec 3.14, unreleased, for `v0.4.0`)
+followed; every command's behaviour with none of those flags passed stays
 byte-identical to `v0.2.0`, the release before it started (spec 3.11).
 
 **The CLI contract with the plugin repo** is spec 3.4 (every flag and
@@ -215,8 +216,8 @@ PRs can land in parallel.
 
 - **Without the new flags, v0.2.0's bytes.** With none of `--json`,
   `--owned-apps`, `--ignore-file`, `--client-shortcut`, `--commit`,
-  `--park-unpublished`, `--cached`, `status --host`, no new subcommand, no
-  `active-host` state file and no `pinned`/`stale_art` entry in
+  `--park-unpublished`, `--cached`, `status --host`, `--hide-host-apps`, no
+  new subcommand, no `active-host` state file and no `pinned`/`stale_art` entry in
   `matches.json`, every command produces the same stdout, stderr, exit
   code and the same bytes under the Steam root and in `matches.json` as
   v0.2.0 (`1488a96`). Exactly three things differ and nothing else: the
@@ -271,6 +272,29 @@ PRs can land in parallel.
   in the human lines, a `hide` line under `--dry-run`) and never in
   `to_park`. The `plan` event's keys are the spec's (3.4.6); there is no
   `to_hide` key.
+- **`host-app` is a `shortcut` entry with `IsHidden = 1`, and only under
+  `--hide-host-apps`** (decky spec 3.14). `Desktop` / `Steam Big Picture`
+  (`reporting.is_default_host_app`: trimmed, casefolded -- the same rule the
+  plugin's panel buttons use, so change both or neither) keep `name +
+  name_suffix` and therefore their appid, which is the whole point: a
+  visible one goes in `Plan.to_hide` like an unhidden `stream` entry, not
+  in `to_replace`, so art, icon and controller layout survive. (The one
+  replacement is the one a `shortcut` title gets too: under `--owned-apps`
+  an entry whose `AppName` is *not* `name + name_suffix` is renamed --
+  it may be a former `stream` entry carrying an owned game's name, and so
+  the appid that game's real Stream entry needs. Every plugin install has
+  synced with `--owned-apps` since v0.3.0, so its two tiles already carry
+  the canonical name and are only ever hidden in place.) The kind is
+  decided before `stream` (it never enters `taken`, so it is never a
+  duplicate's winner or loser) and after `ignored`; it is never in
+  `parked_names` or `to_unpark`; `status` applies the `stream` parked rule
+  to it under the flag. The `"host-app"` kind value and the three JSON keys
+  (`plan.host_app`, `added_by_kind["host-app"]`, `entry.host_app`) are
+  emitted by `sync`, `list` and `status` **only under the flag**: the
+  plugin's row kinds are a closed union, and both repos' tests compare
+  those events key for key. (`art`, which has no flag and no plan, calls a
+  hidden default host app under its own `AppName` `host-app` rather than
+  `stream`; such an entry only exists once the flag or parking hid it.)
 - **Entries never record a host.** Which host a tile streams from is
   decided at launch time by the active-host rule; the tool's only
   host-scoped state is the read-only list cache under `<cache dir>/hosts/`.
