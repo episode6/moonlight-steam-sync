@@ -1,5 +1,10 @@
 # moonlight-steam-sync
 
+> [!WARNING]
+> **This repository has been archived and is no longer maintained.**
+>
+> Development continues in [**episode6/moonlight-steam-sync-decky**](https://github.com/episode6/moonlight-steam-sync-decky) (the **Moonlight Sync** Decky Loader plugin). Please file issues, feature requests and pull requests there instead. The releases and documentation below are kept for reference only.
+
 Sync the game list published by a [Moonlight](https://moonlight-stream.org/) host
 into Steam as non-Steam shortcuts, and dress each one with artwork from Steam's
 own CDN and [SteamGridDB](https://www.steamgriddb.com/) -- the same file layout
